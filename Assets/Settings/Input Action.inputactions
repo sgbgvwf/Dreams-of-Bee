@@ -1,0 +1,55 @@
+{
+    "version": 1,
+    "name": "Input Action",
+    "maps": [
+        {
+            "name": "Keyboard and Mouse",
+            "id": "55becf5b-8587-4589-b49a-560c914940d7",
+            "actions": [
+                {
+                    "name": "Fly",
+                    "type": "Button",
+                    "id": "36e1ea4f-3235-45a7-b1b0-7a00759f73af",
+                    "expectedControlType": "",
+                    "processors": "",
+                    "interactions": "",
+                    "initialStateCheck": false
+                },
+                {
+                    "name": "New action1",
+                    "type": "Button",
+                    "id": "47feeb59-c79a-4e36-a361-4aa18b5bb89b",
+                    "expectedControlType": "",
+                    "processors": "",
+                    "interactions": "",
+                    "initialStateCheck": false
+                }
+            ],
+            "bindings": [
+                {
+                    "name": "",
+                    "id": "4c2204b4-6fe2-4052-ac9b-b2bc954d31be",
+                    "path": "<Keyboard>/w",
+                    "interactions": "",
+                    "processors": "",
+                    "groups": "",
+                    "action": "Fly",
+                    "isComposite": false,
+                    "isPartOfComposite": false
+                },
+                {
+                    "name": "",
+                    "id": "5f253dc9-43e6-4195-8a8c-f57d8caf174c",
+                    "path": "",
+                    "interactions": "",
+                    "processors": "",
+                    "groups": "",
+                    "action": "New action1",
+                    "isComposite": false,
+                    "isPartOfComposite": false
+                }
+            ]
+        }
+    ],
+    "controlSchemes": []
+}

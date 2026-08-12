@@ -48,10 +48,12 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   plane: {fileID: 7719096276130681081}
-  areaLights:
-  - {fileID: 7765604422213599694}
-  - {fileID: 3725573049952438445}
+  areaLight: {fileID: 7765604422213599694}
   syncEnabled: 1
+  lightColor: {r: 1, g: 1, b: 1, a: 1}
+  lightIntensity: 1000
+  lightRange: 10
+  planeMaterial: {fileID: -876546973899608171, guid: 164fd9a6b30981b40aca2393f04a81db, type: 3}
 --- !u!1 &3402999523829077071
 GameObject:
   m_ObjectHideFlags: 0
