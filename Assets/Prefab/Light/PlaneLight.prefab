@@ -44,7 +44,7 @@ Light:
   serializedVersion: 10
   m_Type: 2
   m_Shape: 0
-  m_Color: {r: 0.7106918, g: 0.7106918, b: 0.7106918, a: 1}
+  m_Color: {r: 1, g: 1, b: 1, a: 1}
   m_Intensity: 31.830988
   m_Range: 30
   m_SpotAngle: 30
@@ -266,7 +266,7 @@ MonoBehaviour:
   plane: {fileID: 3457989691144800649}
   areaLight: {fileID: 2856833140840804119}
   syncEnabled: 1
-  lightColor: {r: 0.7106918, g: 0.7106918, b: 0.7106918, a: 1}
+  lightColor: {r: 1, g: 1, b: 1, a: 1}
   lightIntensity: 100
   lightRange: 30
   planeMaterial: {fileID: 2100000, guid: 49fb126265bab20458ebe56019e356b4, type: 2}

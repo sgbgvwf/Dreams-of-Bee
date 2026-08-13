@@ -1,10 +1,14 @@
 using UnityEngine;
 using UnityEngine.Rendering.HighDefinition;
+#if UNITY_EDITOR
+using UnityEditor;
+#endif
 
 /// <summary>
 /// Attach to the LineLamp root. Drives one Area Light from the Plane child's transform:
-///   - Plane.localScale.x/z scales the area light size proportionally
+///   - Light size always equals the Plane's size (localScale x 10)
 ///   - Plane.localRotation makes the light orbit around the Plane + follow its orientation
+///   - Inspector fields control color / intensity / range, mirrored to the Plane's material _Color
 /// Works in Edit Mode and Play Mode.
 /// </summary>
 [ExecuteAlways]
@@ -33,16 +37,27 @@ public class LineLampController : MonoBehaviour
     [SerializeField, Tooltip("Plane's material whose _Color follows the light color. Auto-filled from the Plane's renderer if empty.")]
     private Material planeMaterial;
 
+    // The built-in Plane mesh is 10x10 units, so the light size is the
+    // Plane's local scale multiplied by this factor.
+    private const float PlaneToLightScaleFactor = 10f;
+
     // --- Baseline state (captured at Awake / Rebaseline) ---
     private Quaternion initialPlaneRotation;
-    private Vector3 initialPlaneScale;
     private Vector3 initialLightPosition;
     private Quaternion initialLightRotation;
-    private Vector2 initialAreaSize;
     private HDAdditionalLightData hdData;
 
     private bool hasBaseline;
     private bool warnedMissingReference;
+
+    // --- Last-applied values: only write when changed, so the scene/material
+    // don't get dirtied every editor tick. ---
+    private Quaternion lastAppliedDelta = Quaternion.identity;
+    private Vector2 lastAppliedSize;
+    private bool hasAppliedLightProperties;
+    private Color lastAppliedLightColor;
+    private float lastAppliedLightIntensity;
+    private float lastAppliedLightRange;
     private bool hasAppliedMaterialColor;
     private Color lastAppliedMaterialColor;
 
@@ -56,17 +71,44 @@ public class LineLampController : MonoBehaviour
 
     private void OnEnable()
     {
-        // Re-resolve when the component is enabled (handles domain reload, etc.)
         if (!hasBaseline)
         {
             ResolveReferences();
             CaptureBaseline();
         }
+
+#if UNITY_EDITOR
+        // Edit Mode: drive from the editor tick so the sync works even when
+        // Update doesn't fire (prefab editing, Inspector-only changes, etc.).
+        EditorApplication.update += EditorTick;
+#endif
     }
 
+    private void OnDisable()
+    {
+#if UNITY_EDITOR
+        EditorApplication.update -= EditorTick;
+#endif
+    }
+
+    // Play Mode path (Update also fires in Edit Mode sometimes; caching makes it harmless).
     private void Update()
     {
-        // Self-heal: re-resolve and re-capture if the baseline was never captured
+        if (Application.isPlaying)
+            SyncFromPlane();
+    }
+
+#if UNITY_EDITOR
+    // Edit Mode path: runs every editor tick, regardless of scene view repaints.
+    private void EditorTick()
+    {
+        if (Application.isPlaying) return;   // Play Mode is handled by Update
+        SyncFromPlane();
+    }
+#endif
+
+    private void SyncFromPlane()
+    {
         if (!hasBaseline)
         {
             ResolveReferences();
@@ -80,18 +122,26 @@ public class LineLampController : MonoBehaviour
     }
 
     /// <summary>
-    /// Fired whenever an Inspector field changes — applies color/intensity/range
-    /// immediately, even in Edit Mode without waiting for the next Update.
+    /// Fired whenever an Inspector field changes — applies everything immediately,
+    /// even in Edit Mode without waiting for the next editor tick.
     /// </summary>
     private void OnValidate()
     {
-        if (areaLight == null)
-            ResolveReferences();
-        if (areaLight == null) return;
+        ResolveReferences();
+
+        if (plane == null || areaLight == null) return;
+
+        if (!hasBaseline)
+            CaptureBaseline();
 
         if (hdData == null)
             hdData = areaLight.GetComponent<HDAdditionalLightData>();
 
+        if (syncEnabled)
+        {
+            SyncTransform();
+            SyncScale();
+        }
         ApplyLightProperties();
     }
 
@@ -118,10 +168,8 @@ public class LineLampController : MonoBehaviour
         }
 
         initialPlaneRotation = plane.localRotation;
-        initialPlaneScale = plane.localScale;
         initialLightPosition = areaLight.transform.localPosition;
         initialLightRotation = areaLight.transform.localRotation;
-        initialAreaSize = areaLight.areaSize;
         hdData = areaLight.GetComponent<HDAdditionalLightData>();
         hasBaseline = true;
     }
@@ -164,21 +212,25 @@ public class LineLampController : MonoBehaviour
     {
         Quaternion delta = plane.localRotation * Quaternion.Inverse(initialPlaneRotation);
 
+        if (delta == lastAppliedDelta) return;
+        lastAppliedDelta = delta;
+
         areaLight.transform.localPosition = delta * initialLightPosition;
         areaLight.transform.localRotation = delta * initialLightRotation;
     }
 
     /// <summary>
-    /// Scale the light proportionally to the Plane's X/Z scale.
+    /// Make the light size exactly equal to the Plane's size:
+    /// width  = |localScale.x| * 10, height = |localScale.z| * 10.
     /// </summary>
     private void SyncScale()
     {
-        float rx = SafeRatio(plane.localScale.x, initialPlaneScale.x);
-        float rz = SafeRatio(plane.localScale.z, initialPlaneScale.z);
-
         Vector2 size = new Vector2(
-            initialAreaSize.x * rx,
-            initialAreaSize.y * rz);
+            Mathf.Abs(plane.localScale.x) * PlaneToLightScaleFactor,
+            Mathf.Abs(plane.localScale.z) * PlaneToLightScaleFactor);
+
+        if (size == lastAppliedSize) return;
+        lastAppliedSize = size;
 
         areaLight.areaSize = size;
         if (hdData != null)
@@ -194,15 +246,29 @@ public class LineLampController : MonoBehaviour
     /// </summary>
     private void ApplyLightProperties()
     {
-        if (hdData != null)
-        {
-            hdData.EnableColorTemperature(false);
-            hdData.SetColor(lightColor);
-            hdData.intensity = lightIntensity;
-        }
+        // Light color / intensity / range — write only when changed.
+        bool lightChanged = !hasAppliedLightProperties
+            || lightColor != lastAppliedLightColor
+            || lightIntensity != lastAppliedLightIntensity
+            || lightRange != lastAppliedLightRange;
 
-        areaLight.color = lightColor;
-        areaLight.range = lightRange;
+        if (lightChanged)
+        {
+            hasAppliedLightProperties = true;
+            lastAppliedLightColor = lightColor;
+            lastAppliedLightIntensity = lightIntensity;
+            lastAppliedLightRange = lightRange;
+
+            if (hdData != null)
+            {
+                hdData.EnableColorTemperature(false);
+                hdData.SetColor(lightColor);
+                hdData.intensity = lightIntensity;
+            }
+
+            areaLight.color = lightColor;
+            areaLight.range = lightRange;
+        }
 
         // Keep the Plane's emissive material color in sync.
         // Only write when the color actually changed to avoid dirtying the
@@ -215,13 +281,4 @@ public class LineLampController : MonoBehaviour
         }
     }
 
-    /// <summary>
-    /// Returns current / initial, guarded against zero division and negative values.
-    /// </summary>
-    private static float SafeRatio(float current, float initial)
-    {
-        if (Mathf.Approximately(initial, 0f))
-            return 1f;
-        return Mathf.Abs(current) / Mathf.Abs(initial);
-    }
 }

@@ -16,10 +16,10 @@
                     "initialStateCheck": false
                 },
                 {
-                    "name": "New action1",
-                    "type": "Button",
-                    "id": "47feeb59-c79a-4e36-a361-4aa18b5bb89b",
-                    "expectedControlType": "",
+                    "name": "Look",
+                    "type": "Value",
+                    "id": "c9f2e1d4-8b6a-4f3c-9e2d-1a5b7c3d8e9f",
+                    "expectedControlType": "Vector2",
                     "processors": "",
                     "interactions": "",
                     "initialStateCheck": false
@@ -39,12 +39,12 @@
                 },
                 {
                     "name": "",
-                    "id": "5f253dc9-43e6-4195-8a8c-f57d8caf174c",
-                    "path": "",
+                    "id": "f1a2b3c4-d5e6-4789-a1b2-c3d4e5f60718",
+                    "path": "<Mouse>/delta",
                     "interactions": "",
                     "processors": "",
                     "groups": "",
-                    "action": "New action1",
+                    "action": "Look",
                     "isComposite": false,
                     "isPartOfComposite": false
                 }
