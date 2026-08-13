@@ -8,8 +8,15 @@ using UnityEditor;
 /// Attach to the LineLamp root. Drives one Area Light from the Plane child's transform:
 ///   - Light size always equals the Plane's size (localScale x 10)
 ///   - Plane.localRotation makes the light orbit around the Plane + follow its orientation
-///   - Inspector fields control color / intensity / range, mirrored to the Plane's material _Color
+///   - Inspector fields control color / intensity / range, mirrored to the Plane's material:
+///     _Color follows the light color, and the _Light emission float equals the light
+///     intensity divided by emissionDivisor
+/// In Play Mode the face material is a per-renderer runtime instance, so other
+/// objects sharing the same material asset are unaffected. In Edit Mode the
+/// shared asset itself is written, so the authored look persists in the scene.
 /// Works in Edit Mode and Play Mode.
+/// Do not combine with FlickeringLight / LightColorAlternator on the same lamp -
+/// this script owns the light's color/intensity.
 /// </summary>
 [ExecuteAlways]
 public class LineLampController : MonoBehaviour
@@ -34,8 +41,9 @@ public class LineLampController : MonoBehaviour
     [Min(0f)]
     private float lightRange = 10f;
 
-    [SerializeField, Tooltip("Plane's material whose _Color follows the light color. Auto-filled from the Plane's renderer if empty.")]
-    private Material planeMaterial;
+    [SerializeField, Tooltip("The face material's _Light emission equals the light intensity divided by this value. The default lamp setup (intensity 1000, _Light 2) needs 500.")]
+    [Min(0.001f)]
+    private float emissionDivisor = 500f;
 
     // The built-in Plane mesh is 10x10 units, so the light size is the
     // Plane's local scale multiplied by this factor.
@@ -49,6 +57,7 @@ public class LineLampController : MonoBehaviour
 
     private bool hasBaseline;
     private bool warnedMissingReference;
+    private bool warnedMissingLightProperty;
 
     // --- Last-applied values: only write when changed, so the scene/material
     // don't get dirtied every editor tick. ---
@@ -60,8 +69,15 @@ public class LineLampController : MonoBehaviour
     private float lastAppliedLightRange;
     private bool hasAppliedMaterialColor;
     private Color lastAppliedMaterialColor;
+    private bool hasAppliedEmission;
+    private float lastAppliedEmission;
+
+    // The Plane's material to sync. Always derived from the Plane's renderer:
+    // the runtime instance in Play Mode, the shared asset in Edit Mode.
+    private Material planeMaterial;
 
     private static readonly int ColorPropertyId = Shader.PropertyToID("_Color");
+    private static readonly int LightPropertyId = Shader.PropertyToID("_Light");
 
     private void Awake()
     {
@@ -71,11 +87,18 @@ public class LineLampController : MonoBehaviour
 
     private void OnEnable()
     {
+        // Always re-resolve: entering Play Mode must switch the face material
+        // from the shared asset to a per-renderer runtime instance.
+        ResolveReferences();
         if (!hasBaseline)
-        {
-            ResolveReferences();
             CaptureBaseline();
-        }
+
+        // Forget last-applied values so the freshly resolved material (and the
+        // light, whose serialized state is restored after Play Mode) get a
+        // fresh application on the next tick.
+        hasAppliedLightProperties = false;
+        hasAppliedMaterialColor = false;
+        hasAppliedEmission = false;
 
 #if UNITY_EDITOR
         // Edit Mode: drive from the editor tick so the sync works even when
@@ -171,7 +194,33 @@ public class LineLampController : MonoBehaviour
         initialLightPosition = areaLight.transform.localPosition;
         initialLightRotation = areaLight.transform.localRotation;
         hdData = areaLight.GetComponent<HDAdditionalLightData>();
+
+        ResolveFaceMaterial();
+
         hasBaseline = true;
+    }
+
+    /// <summary>
+    /// Derive the face material from the Plane's renderer: the per-renderer
+    /// runtime instance in Play Mode (other lamps sharing the material asset
+    /// are unaffected), the shared asset in Edit Mode (authored look persists).
+    /// </summary>
+    private void ResolveFaceMaterial()
+    {
+        if (plane == null)
+        {
+            planeMaterial = null;
+            return;
+        }
+
+        Renderer renderer = plane.GetComponent<Renderer>();
+        if (renderer == null)
+        {
+            planeMaterial = null;
+            return;
+        }
+
+        planeMaterial = Application.isPlaying ? renderer.material : renderer.sharedMaterial;
     }
 
     private void ResolveReferences()
@@ -179,12 +228,7 @@ public class LineLampController : MonoBehaviour
         if (plane == null)
             plane = transform.Find("Plane");
 
-        if (planeMaterial == null && plane != null)
-        {
-            var renderer = plane.GetComponent<Renderer>();
-            if (renderer != null)
-                planeMaterial = renderer.sharedMaterial;
-        }
+        ResolveFaceMaterial();
 
         if (areaLight == null)
         {
@@ -241,8 +285,9 @@ public class LineLampController : MonoBehaviour
     }
 
     /// <summary>
-    /// Apply color / intensity / range from the Inspector fields.
-    /// Disables color temperature mode so the color takes effect directly.
+    /// Apply color / intensity / range from the Inspector fields, and mirror
+    /// them to the face material: _Color follows the light color, _Light
+    /// (emission) follows the light intensity.
     /// </summary>
     private void ApplyLightProperties()
     {
@@ -270,15 +315,40 @@ public class LineLampController : MonoBehaviour
             areaLight.range = lightRange;
         }
 
-        // Keep the Plane's emissive material color in sync.
-        // Only write when the color actually changed to avoid dirtying the
-        // material asset every frame in Edit Mode.
-        if (planeMaterial != null && (!hasAppliedMaterialColor || lightColor != lastAppliedMaterialColor))
+        if (planeMaterial == null)
+            ResolveFaceMaterial();
+
+        if (planeMaterial == null) return;
+
+        // Face color follows the light color.
+        if (!hasAppliedMaterialColor || lightColor != lastAppliedMaterialColor)
         {
             planeMaterial.SetColor(ColorPropertyId, lightColor);
             lastAppliedMaterialColor = lightColor;
             hasAppliedMaterialColor = true;
         }
-    }
 
+        // Face emission = light intensity / emissionDivisor. Simple direct
+        // mapping: the face's _Light float is just the light brightness
+        // scaled down into the shader's emission range.
+        if (planeMaterial.HasProperty(LightPropertyId))
+        {
+            if (emissionDivisor > 0f)
+            {
+                float targetEmission = lightIntensity / emissionDivisor;
+                if (!hasAppliedEmission || targetEmission != lastAppliedEmission)
+                {
+                    hasAppliedEmission = true;
+                    lastAppliedEmission = targetEmission;
+                    planeMaterial.SetFloat(LightPropertyId, targetEmission);
+                }
+            }
+        }
+        else if (!warnedMissingLightProperty)
+        {
+            warnedMissingLightProperty = true;
+            Debug.LogWarning($"[LineLampController] The plane material {planeMaterial.name} has no _Light property, " +
+                "so the face's emission cannot follow the light intensity.");
+        }
+    }
 }
