@@ -7,11 +7,12 @@ using UnityEngine.InputSystem;
 ///   - Hold the Fly action (W) to fly forward along the camera's look direction (look up = climb, look down = dive)
 ///   - Movement is physics-driven: the Rigidbody velocity is set every frame, so the bee
 ///     stops the instant W is released (no drift, no inertia)
-///   - Gravity is off while flying; SetGravityEnabled() is a reserved hook to let gravity
-///     apply temporarily (e.g. a stunned drop), only while W is not held
+///   - Hovering clears ALL velocity (vertical included), so no residual momentum carries over
+///   - Gravity is never applied by this controller: SetGravityEnabled() is a reserved hook
+///     for external forces that simulate gravity (e.g. a stunned drop), only while W is not held
 ///   - The camera is hard-synced to the Player every frame (position + look rotation),
 ///     so it always follows even if it is not parented to the Player
-/// ESC releases the cursor and pauses control; left-click re-locks it.
+/// Hold Alt to release the cursor (control pauses); releasing Alt re-locks it.
 /// </summary>
 public class BeeFlightController : MonoBehaviour
 {
@@ -85,21 +86,15 @@ public class BeeFlightController : MonoBehaviour
         cameraTransform.SetPositionAndRotation(transform.position, Quaternion.Euler(pitch, yaw, 0f));
     }
 
-    /// <summary>Release the cursor with ESC; re-lock it with a left click.</summary>
+    /// <summary>While Alt is held the cursor is released (control pauses); releasing Alt re-locks it.</summary>
     private void HandleCursor()
     {
         var keyboard = Keyboard.current;
-        var mouse = Mouse.current;
+        if (keyboard == null) return;
 
-        if (keyboard != null && keyboard.escapeKey.wasPressedThisFrame)
-        {
-            Cursor.lockState = CursorLockMode.None;
-            Cursor.visible = true;
-        }
-        else if (mouse != null && mouse.leftButton.wasPressedThisFrame && Cursor.lockState != CursorLockMode.Locked)
-        {
-            LockCursor();
-        }
+        bool altHeld = keyboard.altKey.isPressed || keyboard.rightAltKey.isPressed;
+        Cursor.lockState = altHeld ? CursorLockMode.None : CursorLockMode.Locked;
+        Cursor.visible = altHeld;
     }
 
     private void LockCursor()
@@ -145,29 +140,40 @@ public class BeeFlightController : MonoBehaviour
 
         bool flying = controlled && moveAction != null && moveAction.IsPressed();
 
-        rb.useGravity = gravityEnabled && !flying;
+        // Gravity is simulated by external forces (see SetGravityEnabled);
+        // Unity's built-in gravity is never used.
+        rb.useGravity = false;
         rb.angularVelocity = Vector3.zero;
 
-        if (!flying)
+        if (flying)
         {
-            // Hover: clear horizontal drift only, so a reserved-gravity fall keeps falling.
-            Vector3 v = rb.velocity;
-            v.x = 0f;
-            v.z = 0f;
-            rb.velocity = v;
+            rb.velocity = cameraTransform.forward * flySpeed;
             return;
         }
 
-        rb.velocity = cameraTransform.forward * flySpeed;
+        if (gravityEnabled)
+        {
+            // Reserved: external forces (e.g. a simulated gravity force) drive the bee freely.
+            return;
+        }
+
+        // Hover: clear ALL velocity (vertical included), so no residual momentum
+        // carries over when W is released mid-climb or mid-dive.
+        rb.velocity = Vector3.zero;
     }
 
     /// <summary>
-    /// Reserved hook: temporarily let gravity affect the bee (e.g. a stunned drop).
-    /// Gravity only applies while W is not held - holding W always overrides it off.
+    /// Reserved hook: let external forces (e.g. a custom force that simulates gravity)
+    /// drive the bee instead of hover-locking it. While enabled, the bee is only
+    /// controlled while W is held; otherwise it is driven purely by physics forces.
+    /// Gravity is expected to be applied externally via Rigidbody.AddForce
+    /// (ForceMode.Acceleration) - Unity's built-in rb.useGravity is never used.
     /// </summary>
     public void SetGravityEnabled(bool enabled)
     {
         gravityEnabled = enabled;
+        if (rb != null)
+            rb.useGravity = false;
     }
 
     private void ResolveReferences()

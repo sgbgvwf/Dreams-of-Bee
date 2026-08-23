@@ -17,6 +17,9 @@ using System.Collections;
 /// a child) travels together. Safe to combine with the light scripts.
 /// Attach to any GameObject and drag the door root into the Inspector.
 /// Play Mode only.
+///
+/// Note: doors are NOT Interactable - no pickup, no outline. They are driven
+/// by CardReader / LevelTransitionManager only.
 /// </summary>
 public class SlidingDoor : MonoBehaviour
 {
@@ -40,6 +43,20 @@ public class SlidingDoor : MonoBehaviour
     [SerializeField, Tooltip("Test switch: tick it during Play Mode to open, untick to close. Not a real signal input.")]
     private bool open;
 
+    [SerializeField, Tooltip("初始是否上锁：上锁时忽略一切开门请求（关门始终允许）。关卡切换系统用它在玩家通过后防止回头。")]
+    private bool startLocked;
+
+    [SerializeField, Tooltip("近关夹持位置(0..1)：开门途中被夹持时停在的位置。0=全关，1=全开。夹持期间门缝小于玩家直径，既是物理屏障也是视觉屏障（加载等待期的无 UI 遮挡）。")]
+    [Range(0.05f, 0.3f)]
+    private float holdProgress = 0.12f;
+
+    [SerializeField, Tooltip("所属关卡索引（与 LevelTransitionManager 关卡列表一致；-1=不校验）。关卡切换系统用它校验出口门归属，防止卡片刷开别的关的门")]
+    private int levelIndex = -1;
+
+    // --- Lock / hold state (driven by LevelTransitionManager) ---
+    private bool locked;        // 锁：只阻止"开门"，不阻止"关门"
+    private bool holdOpen;      // 近关夹持：开门途中钳制在 holdProgress
+
     // --- Baseline captured on first use (door may be posed in the scene) ---
     private Vector3 closedPosition;
     private Vector3 openPosition;
@@ -52,6 +69,11 @@ public class SlidingDoor : MonoBehaviour
 
     private bool lastOpen;   // last value the test switch drove the door with
     private bool warnedMissingDoor;
+
+    private void Awake()
+    {
+        locked = startLocked;
+    }
 
     private void Update()
     {
@@ -82,6 +104,33 @@ public class SlidingDoor : MonoBehaviour
         SignalTo(!targetOpen);
     }
 
+    /// <summary>门是否处于锁定状态。</summary>
+    public bool IsLocked => locked;
+
+    /// <summary>所属关卡索引（-1 = 未配置，不校验）。</summary>
+    public int LevelIndex => levelIndex;
+
+    /// <summary>
+    /// 设置锁定：上锁后忽略一切开门请求（关门始终允许）。
+    /// 关卡切换系统在玩家通过后上锁，防止玩家回头再开门。
+    /// </summary>
+    public void SetLocked(bool value)
+    {
+        locked = value;
+    }
+
+    /// <summary>
+    /// 近关夹持开关：开门途中把进度钳制在 holdProgress（加载等待期的无 UI 屏障）。
+    /// 解除夹持后门自动继续开完，无需重新发信号。
+    /// </summary>
+    public void SetHoldOpen(bool active)
+    {
+        holdOpen = active;
+    }
+
+    /// <summary>门是否已完全关闭（进度 0）。关卡切换系统用它判断关门完成后再卸载场景。</summary>
+    public bool IsFullyClosed => progress <= 0f;
+
     private void SignalTo(bool opening)
     {
         if (door == null)
@@ -94,6 +143,9 @@ public class SlidingDoor : MonoBehaviour
             }
             return;
         }
+
+        // 锁定时忽略开门请求（关门不受锁限制，避免玩家被卡在半开门状态）
+        if (opening && locked) return;
 
         if (!hasBaseline) CaptureBaseline();
         if (opening == targetOpen) return;   // already headed there: no-op
@@ -125,6 +177,10 @@ public class SlidingDoor : MonoBehaviour
         while (progress != target)
         {
             progress = Mathf.MoveTowards(progress, target, Time.deltaTime / duration);
+            // 近关夹持：开门途中把进度钳在 holdProgress，门停在近关位（目标永远未达 → 协程持续运行）；
+            // 解除夹持后进度继续推进，门自动开完。夹持只作用于"开门"，关门不受影响。
+            if (opening && holdOpen)
+                progress = Mathf.Min(progress, holdProgress);
             door.position = Vector3.Lerp(closedPosition, openPosition, slideCurve.Evaluate(progress));
             yield return null;
         }

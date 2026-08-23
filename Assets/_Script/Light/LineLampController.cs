@@ -220,7 +220,21 @@ public class LineLampController : MonoBehaviour
             return;
         }
 
-        planeMaterial = Application.isPlaying ? renderer.material : renderer.sharedMaterial;
+        // Play 模式下实例化材质（不影响资产）；prefab 资产上禁止实例化（OnValidate
+        // 进入 Play 时也会在 prefab 资产上触发），此时退回 sharedMaterial
+        if (Application.isPlaying && !IsPrefabAsset(renderer.gameObject))
+            planeMaterial = renderer.material;
+        else
+            planeMaterial = renderer.sharedMaterial;
+    }
+
+    static bool IsPrefabAsset(GameObject go)
+    {
+#if UNITY_EDITOR
+        return UnityEditor.PrefabUtility.IsPartOfPrefabAsset(go);
+#else
+        return false;
+#endif
     }
 
     private void ResolveReferences()

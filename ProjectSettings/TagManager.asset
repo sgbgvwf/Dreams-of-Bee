@@ -3,17 +3,19 @@
 --- !u!78 &1
 TagManager:
   serializedVersion: 2
-  tags: []
+  tags:
+  - Player
+  - Camera
   layers:
   - Default
   - TransparentFX
   - Ignore Raycast
-  - 
+  - Outline
   - Water
   - UI
   - 
-  - 
-  - 
+  - Player
+  - Interactable
   - 
   - 
   - 
