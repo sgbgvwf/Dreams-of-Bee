@@ -9,23 +9,25 @@ using UnityEditor;
 /// <summary>
 /// 关卡切换管理器（单例）：无缝关卡推进的核心状态机。挂在 Persistance 启动场景的 LevelManager 上。
 ///
+/// 启动引导：并行加载玩家场景（Player.unity）与第 0 关。玩家有独立的常驻场景 —— 与 Persistance
+/// 相同的机制：启动时加载一次、永不卸载（不调用 DontDestroyOnLoad；卸载只针对关卡场景），
+/// 其中的玩家（含准星 Canvas / EventSystem 子物体）因此跨关卡持续存在。玩家不放进关卡场景、
+/// 也不放进 Persistance。出生位置固定在 Player 场景的 Player 对象上（直接拖它即可）。
+/// 玩家碰撞体注入有 Interactable.ReapplyPlayerCollisionIgnore 兜底，并行加载时序不再敏感。
+///
 /// 时序（严格遵循）：
 ///   T0 玩家在出口读卡器上刷卡成功 → 后台异步加载下一关（门保持关闭且锁定 —— 关闭的门本身就是屏障）
-///   T1 加载完成 → 将下一关场景根对齐（入口锚点 ≡ 当前关出口锚点）→ 门自动滑开
-///      （门打开的瞬间，门后已是完整就位的下一关，玩家直接看到，无任何加载痕迹）
-///   T2 玩家踏入通过触发器 → 结算过渡（记录当前关卡、解析并预锁新关出口门）
-///   T3 玩家踏入卸载触发器 → 直接异步卸载上一关（不等出口门关闭）→ 清理资源
+///   T1 加载完成 → 激活新场景、解析入口锚点 → 门自动滑开 → 激活出口锚点上的传送门（PortalDoor）
+///      （门打开的瞬间，门面上的门后渲染纹理已实时显示下一关，玩家看到完整画面的瞬间它已存在）
+///   T2 玩家穿过门洞 → PortalDoor 把玩家传送到下一关入口门洞（速度 / 朝向同步换算）→ 结算过渡
+///   T3 结算后立即异步卸载上一关 → 清理资源（门是单向的：前场景已卸载，无法返回）
 ///
-/// 极端情况天然消除：加载未完成前门始终关闭（物理+视觉屏障），玩家不可能看到未加载的空白；
-/// 若玩家绕开门口（飞行越过围墙）提前进入通过区，管理器记录等待，加载+对齐完成瞬间自动结算，
-/// 全程无任何加载 UI / 进度条 / 黑屏。
-///
-/// 无缝原理：新关卡加载后整体移动其场景根 Transform，使新关入口锚点与当前关出口锚点
-/// 在世界空间完全重合 → 玩家穿过门时世界坐标连续，不做任何传送 / 速度 / Transform 修改。
+/// 无缝原理：下一关独立摆放在自己的世界坐标（不再对齐拼接），门洞由传送门系统渲染
+/// （PortalDoor 用"相对门的位置与玩家相对门的位置相同"的相机生成门面纹理），
+/// 穿过瞬间玩家被传送到下一关门洞的对应位置，画面天然连续。
 ///
 /// 防异常：防重复加载（loadState）、防重复卸载/结算（unloading / passFinalized）、
-/// 卸载期间禁止新加载（pendingTransition 挂起续传）、未对齐不结算、
-/// 最后一关无出口锚点全程空值安全。Play Mode only。
+/// 卸载期间禁止新加载（pendingTransition 挂起续传）、最后一关无出口锚点全程空值安全。Play Mode only。
 /// </summary>
 public class LevelTransitionManager : MonoBehaviour
 {
@@ -43,29 +45,37 @@ public class LevelTransitionManager : MonoBehaviour
     [SerializeField, HideInInspector]
     private string[] levelPaths;
 
-    [SerializeField, Tooltip("仅测试用：模拟加载延迟（秒），用于观察‘门保持关闭直到加载完成’与通过区等待逻辑")]
+#if UNITY_EDITOR
+    [SerializeField, Tooltip("玩家场景（Player.unity）：启动时加载一次、永不卸载，与 Persistance 相同的常驻机制（不调用 DontDestroyOnLoad，关卡卸载只针对关卡场景）")]
+    private SceneAsset playerScene;
+#endif
+
+    [SerializeField, HideInInspector]
+    private string playerScenePath;
+
+    [SerializeField, Tooltip("仅测试用：模拟加载延迟（秒），用于观察‘门保持关闭直到加载完成’的时序")]
     private float simulatedLoadDelay;
 
     [SerializeField, Tooltip("拾卡后门最少保持关闭的时长（秒）：即使下一关瞬间加载完，门也先关够这段时间再开，让‘门是屏障、加载完成后才放行’的顺序可见。设为 0 则加载完立即开门")]
-    private float minDoorCloseTime = 1f;
+    private float minDoorCloseTime = 0.4f;
 
     // --- 状态 ---
     private enum LoadState { Idle, Loading, Done }              // 加载状态
-    private enum PlayerRegion { None, PassZone, UnloadZone }    // 玩家区域状态
 
     private int currentLevelIndex = -1;         // 当前关卡索引
     private LoadState loadState = LoadState.Idle;       // 加载状态
-    private PlayerRegion playerRegion = PlayerRegion.None;  // 玩家所在区域
     private bool unloading;                     // 是否正在卸载（防重复卸载；卸载期间禁止新加载）
     private bool passFinalized;                 // 本次过渡是否已结算（防重复结算）
     private bool transitionTriggered;           // 本关是否已刷卡触发过渡（防重复触发）
     private bool pendingTransition;             // 卸载期间拾卡 → 挂起，卸载完成后自动续传
 
     private Scene currentScene;                 // 当前关卡场景
-    private Scene nextScene;                    // 正在加载的下一关场景（T1 对齐目标）
+    private Scene nextScene;                    // 正在加载的下一关场景（T1 激活目标）
     private Scene prevScene;                    // 上一关卡场景（T3 卸载目标）
     private SlidingDoor exitDoor;               // 当前关出口门（下一段过渡使用）
-    private Transform exitAnchor;               // 当前关出口锚点
+    private Transform exitAnchor;               // 当前关出口锚点（传送门位姿基准）
+    private PortalDoor portal;                  // 当前关出口门上的传送门（下一段过渡 T1 激活）
+    private Transform entryAnchor;              // 下一关入口锚点（T1 解析，传送门位姿基准）
 
     private void Awake()
     {
@@ -83,14 +93,16 @@ public class LevelTransitionManager : MonoBehaviour
     {
         // 校验 levelPaths：序列化引用若失效（levels 的 SceneAsset 引用未解析成功，
         // OnValidate 会把 levelPaths 写成 null 条目），则从 Build Settings 推导关卡列表
-        //（第 0 个是常驻的 Persistance 启动场景，跳过）。
+        //（按路径跳过常驻场景：本管理器所在场景 Persistance + 玩家场景 Player，不按序号假设）。
         if (levelPaths == null || levelPaths.Length == 0 || string.IsNullOrEmpty(levelPaths[0]))
         {
             var fallback = new List<string>();
-            for (int i = 1; i < SceneManager.sceneCountInBuildSettings; i++)
+            string ownScenePath = gameObject.scene.path;
+            for (int i = 0; i < SceneManager.sceneCountInBuildSettings; i++)
             {
                 var p = SceneUtility.GetScenePathByBuildIndex(i);
-                if (!string.IsNullOrEmpty(p)) fallback.Add(p);
+                if (string.IsNullOrEmpty(p) || p == ownScenePath || p == playerScenePath) continue;
+                fallback.Add(p);
             }
             if (fallback.Count > 0)
             {
@@ -119,6 +131,15 @@ public class LevelTransitionManager : MonoBehaviour
 #if UNITY_EDITOR
     private void OnValidate()
     {
+        // 玩家场景镜像为路径（运行时按路径加载；未加入 Build Settings 则无法加载）。
+        // 与 levels 独立处理：levels 清空时玩家场景引用不应被跳过。
+        if (playerScene != null)
+        {
+            playerScenePath = AssetDatabase.GetAssetPath(playerScene);
+            if (!IsInBuildSettings(playerScenePath))
+                Debug.LogWarning($"[LevelTransitionManager] 玩家场景 {playerScenePath} 未加入 Build Settings（File → Build Settings → Scenes in Build），启动时无法加载玩家", this);
+        }
+
         // 把 Inspector 里的 SceneAsset 镜像为路径数组（运行时只走路径加载）
         if (levels == null) return;
         levelPaths = new string[levels.Length];
@@ -149,9 +170,49 @@ public class LevelTransitionManager : MonoBehaviour
 
     private IEnumerator BootSequence()
     {
-        // 加载第 0 关（第一个关卡，无入口锚点，不需要对齐），然后解析并锁定其出口门
-        yield return LoadLevelCoroutine(0);
+        // 玩家场景与第 0 关并行加载（互不依赖，比串行快约一半；两个协程交错推进）：
+        // 玩家碰撞体注入有 Interactable.ReapplyPlayerCollisionIgnore 兜底，
+        // 即使玩家晚于关卡激活，拾取物的碰撞忽略也会补上，时序不再敏感。
+        var playerOp = StartCoroutine(LoadPlayerSceneCoroutine());
+        var levelOp = StartCoroutine(LoadLevelCoroutine(0));
+        yield return playerOp;
+        yield return levelOp;
+
+        // 加载第 0 关（第一个关卡，无入口锚点，不需要传送门），然后解析并锁定其出口门
         ResolveExitForCurrentLevel();
+    }
+
+    /// <summary>
+    /// 加载玩家场景（Player.unity）为常驻场景：与 Persistance 一样启动时加载一次、永不卸载，
+    /// 其中的玩家（含准星 Canvas / EventSystem 子物体）因此跨关卡持续存在 —— 不调用
+    /// DontDestroyOnLoad，关卡卸载（T3）只针对关卡场景 prevScene，玩家场景不可能被卸载。
+    /// 防重复：场景已加载则直接跳过（编辑器里先手开了玩家场景再进 Play 不二次加载）。
+    /// </summary>
+    private IEnumerator LoadPlayerSceneCoroutine()
+    {
+        if (string.IsNullOrEmpty(playerScenePath))
+        {
+            Debug.LogWarning("[LevelTransitionManager] 未配置玩家场景（Inspector → Player Scene 为空），将没有玩家。请把 Player.unity 拖入该字段并确认已加入 Build Settings", this);
+            yield break;
+        }
+
+        var already = SceneManager.GetSceneByPath(playerScenePath);
+        if (already.IsValid() && already.isLoaded)
+        {
+            Debug.Log($"[LevelTransitionManager] 玩家场景已在加载列表中，跳过重复加载：{playerScenePath}", this);
+            yield break;
+        }
+
+        var op = SceneManager.LoadSceneAsync(playerScenePath, LoadSceneMode.Additive);
+        if (op == null)
+        {
+            Debug.LogError($"[LevelTransitionManager] 玩家场景加载失败（op 为 null，请确认已加入 Build Settings）：{playerScenePath}", this);
+            yield break;
+        }
+        yield return op;
+
+        // 常驻机制 = 永不卸载的场景本身：玩家 / 准星 Canvas / EventSystem 随场景跨关卡存活
+        Debug.Log($"[LevelTransitionManager] 玩家场景已加载（常驻，永不卸载）：{playerScenePath}", this);
     }
 
     private void ResolveExitForCurrentLevel()
@@ -166,6 +227,9 @@ public class LevelTransitionManager : MonoBehaviour
             Debug.LogError($"[LevelTransitionManager] {currentScene.name} 的出口门归属关卡({exitDoor.LevelIndex})与当前关卡({currentLevelIndex})不符，忽略该门", this);
             exitDoor = null;
         }
+
+        // 出口锚点上的传送门（下一段过渡 T1 时激活）
+        portal = exitAnchor != null ? exitAnchor.GetComponentInChildren<PortalDoor>(true) : null;
 
         if (exitDoor != null)
         {
@@ -183,7 +247,7 @@ public class LevelTransitionManager : MonoBehaviour
     /// <summary>
     /// T0：玩家在出口读卡器上刷卡成功（CardReader 调用）。
     /// 只有当前关出口门对应的读卡器有效 —— 走回头路刷旧关的卡 / 刷错门一律拒绝。
-    /// 刷卡只负责触发过渡；门的开/关时机全部由管理器控制（加载+对齐完成才开门）。
+    /// 刷卡只负责触发过渡；门的开/关时机全部由管理器控制（加载完成才开门）。
     /// </summary>
     public bool OnCardSwiped(SlidingDoor swipedDoor)
     {
@@ -213,6 +277,8 @@ public class LevelTransitionManager : MonoBehaviour
 
     private void BeginTransition()
     {
+        GameEvents.TransitionStart?.Invoke();   // 过渡开始音效(注册式同步;覆盖刷卡触发与卸载挂起续传两个入口)
+
         // 防重复加载：只有"加载进行中"才拒绝；Done（上一段过渡已结束）允许开启新过渡
         if (loadState == LoadState.Loading)
         {
@@ -222,8 +288,7 @@ public class LevelTransitionManager : MonoBehaviour
 
         // 新一轮过渡：重置上次过渡的结算状态
         passFinalized = false;
-        playerRegion = PlayerRegion.None;
-        nextScene = default;   // 清掉上一段的通过触发器目标，防止走回头路时误结算
+        nextScene = default;
 
         if (currentLevelIndex + 1 >= levelPaths.Length)
         {
@@ -239,15 +304,15 @@ public class LevelTransitionManager : MonoBehaviour
         }
 
         // T0：只启动后台加载。门保持关闭且锁定 —— 加载完成前玩家不可能通过，
-        //     门打开时下一关必然已经加载并对齐完成（见 LoadAndAlignNext）。
+        //     门打开时下一关必然已经加载完成（见 LoadNextAndOpen）。
         loadState = LoadState.Loading;
         Debug.Log($"[LevelTransitionManager] T0: 刷卡成功，后台加载下一关 {levelPaths[currentLevelIndex + 1]}（门保持关闭）", this);
-        StartCoroutine(LoadAndAlignNext());
+        StartCoroutine(LoadNextAndOpen());
     }
 
-    // ==================== T1：加载 + 对齐 ====================
+    // ==================== T1：加载 + 开门 ====================
 
-    private IEnumerator LoadAndAlignNext()
+    private IEnumerator LoadNextAndOpen()
     {
         int nextIndex = currentLevelIndex + 1;
         if (nextIndex < 0 || nextIndex >= levelPaths.Length) yield break;
@@ -260,7 +325,7 @@ public class LevelTransitionManager : MonoBehaviour
             yield break;
         }
 
-        // 先加载内容、不激活：保证场景激活时已完成对齐，玩家看不到"未对齐画面"
+        // 先加载内容、不激活：保证场景激活时已完成全部准备，玩家看不到"未就位画面"
         op.allowSceneActivation = false;
         while (op.progress < 0.9f)
             yield return null;
@@ -271,13 +336,16 @@ public class LevelTransitionManager : MonoBehaviour
         op.allowSceneActivation = true;
         yield return op;
 
-        // T1：加载完成 → 对齐（激活后同一帧完成，无跳变）→ 解锁开门。
-        //     门打开时下一关已完整就位：玩家看到门后场景的瞬间它已存在，无任何加载痕迹。
+        // T1：加载完成 → 激活新场景并解析入口锚点（传送门位姿基准）→ 解锁开门。
+        //     门打开时下一关已完整就位：玩家看到门后画面的瞬间它已存在，无任何加载痕迹。
         nextScene = SceneManager.GetSceneByPath(levelPaths[nextIndex]);
-        AlignLevel(nextScene);
+        SceneManager.SetActiveScene(nextScene);
+        entryAnchor = LevelAnchor.FindAnchor(nextScene, LevelAnchor.AnchorType.Entry);
+        if (entryAnchor == null)
+            Debug.LogError($"[LevelTransitionManager] 下一关 {nextScene.name} 缺少入口锚点（LevelAnchor Entry），传送门无法工作", this);
         loadState = LoadState.Done;
 
-        // 顺序保证：加载 + 对齐已在上方完成；门再等满 minDoorCloseTime 才打开，
+        // 顺序保证：加载已在上方完成；门再等满 minDoorCloseTime 才打开，
         // 让"拾卡 → 门保持关闭 → 加载 → 开门"的顺序可见（加载瞬间完成时也先关够时间）。
         float remaining = minDoorCloseTime - (Time.time - startTime);
         if (remaining > 0f)
@@ -288,105 +356,49 @@ public class LevelTransitionManager : MonoBehaviour
             exitDoor.SetLocked(false);
             exitDoor.OpenDoor();
         }
-        Debug.Log($"[LevelTransitionManager] T1: 下一关 {nextScene.name} 加载并已对齐，门开启", this);
+        // 传送门与门同步激活：门开瞬间门面即显示下一关实时画面
+        if (portal != null && entryAnchor != null)
+            portal.Activate(entryAnchor);
+        GameEvents.LevelReady?.Invoke(nextScene);   // 门开瞬间同步切换新关环境音(注册式同步)
 
-        // 玩家若已等在通过触发器内：立即结算（极端情况的等待点）
-        if (playerRegion == PlayerRegion.PassZone)
-            FinalizePass(nextScene);
+        Debug.Log($"[LevelTransitionManager] T1: 下一关 {nextScene.name} 加载完成，门开启（刷卡到开门共 {Time.time - startTime:F2}s）", this);
     }
 
-    /// <summary>
-    /// 对齐：整体移动下一关场景根，使入口锚点与世界空间当前关出口锚点完全重合。
-    /// levelRoot 旋转先对齐朝向，再平移使锚点重合（锚点 localScale 约定恒为 1）。
-    /// </summary>
-    private void AlignLevel(Scene scene)
+    // ==================== T2：穿过结算 ====================
+
+    /// <summary>T2：玩家穿过传送门（PortalDoor 已把玩家传送到下一关入口门洞）。</summary>
+    public void OnPortalCrossed(PortalDoor sender)
     {
-        var levelRoot = LevelAnchor.FindLevelRoot(scene);
-        var entry = LevelAnchor.FindAnchor(scene, LevelAnchor.AnchorType.Entry);
-        if (levelRoot == null || entry == null || exitAnchor == null)
-        {
-            Debug.LogError("[LevelTransitionManager] 对齐失败：缺少关卡对齐根 / 入口锚点 / 出口锚点", this);
-            return;
-        }
-
-        levelRoot.rotation = exitAnchor.rotation * Quaternion.Inverse(entry.localRotation);
-        levelRoot.position = exitAnchor.position - levelRoot.rotation * Vector3.Scale(entry.localPosition, levelRoot.localScale);
-
-        // 禁用下一关入口门模型（若配置了）：同一连接处只保留一个门模型，避免重叠闪烁
-        var entryModel = entry.GetComponent<LevelAnchor>().EntryDoorModel;
-        if (entryModel != null) entryModel.SetActive(false);
-
-        Debug.Log($"[LevelTransitionManager] 对齐完成：入口锚点与出口锚点差 {Vector3.Distance(entry.position, exitAnchor.position):F4}", this);
-
-        SceneManager.SetActiveScene(scene);
-    }
-
-    // ==================== T2：通过触发器 ====================
-
-    /// <summary>T2：玩家踏入通过触发器（LevelPassTrigger 调用）。</summary>
-    public void OnPlayerEnteredPassZone(LevelPassTrigger trigger)
-    {
-        if (loadState == LoadState.Idle) return;   // 防御：过渡尚未开始
-
-        // 只接受"当前过渡目标关卡"的通过触发器（防止玩家走回头路时误结算）
-        if (trigger.gameObject.scene != nextScene)
-        {
-            Debug.Log("[LevelTransitionManager] 非目标关卡的通过触发器，忽略");
-            return;
-        }
-
-        if (loadState == LoadState.Done)
-        {
-            FinalizePass(trigger.gameObject.scene);
-        }
-        else
-        {
-            // 加载未完成：记录等待，加载完成回调里自动结算（无 UI 提示）
-            playerRegion = PlayerRegion.PassZone;
-            Debug.Log("[LevelTransitionManager] T2: 玩家已到通过区，等待加载与对齐完成…");
-        }
-    }
-
-    /// <summary>结算过渡：记录旧关信息供 T3 卸载，切换当前关卡并预锁新关出口门。</summary>
-    private void FinalizePass(Scene passedScene)
-    {
-        if (passFinalized) return;   // 防重复结算（玩家反复进出触发器）
-        if (currentLevelIndex + 1 >= levelPaths.Length) return;   // 兜底：最后一关没有过渡可结算
+        if (passFinalized) return;   // 防重复结算
 
         passFinalized = true;
         transitionTriggered = false; // 新关卡需要在新关出口读卡器上重新刷卡
-        playerRegion = PlayerRegion.None;
+        GameEvents.LevelConfirm?.Invoke();   // 关卡切换确认音效(注册式同步)
 
-        // 旧关信息留给 T3 卸载使用
+        // 旧关信息留给卸载使用
         prevScene = currentScene;
 
         // 切到新关卡
-        currentScene = passedScene;
+        currentScene = nextScene;
         currentLevelIndex++;
-        Debug.Log($"[LevelTransitionManager] T2: 过渡结算，当前关卡 = {currentScene.name}", this);
+        Debug.Log($"[LevelTransitionManager] T2: 传送穿过，当前关卡 = {currentScene.name}", this);
 
         // 解析新关出口门并预锁（下一段过渡的门口）
         ResolveExitForCurrentLevel();
-    }
 
-    // ==================== T3：卸载触发器 ====================
-
-    /// <summary>T3：玩家踏入卸载触发器（LevelUnloadTrigger 调用）。</summary>
-    public void OnPlayerEnteredUnloadZone(LevelUnloadTrigger trigger)
-    {
-        // 防重复卸载 / 未结算不卸载 / 触发器必须属于当前关卡（防走回头路误触发）
-        if (unloading || !passFinalized || !prevScene.IsValid()) return;
-        if (trigger.gameObject.scene != currentScene) return;
-
+        // T3：立即完全卸载前场景（门是单向的：前场景已卸载，无法返回）
         StartCoroutine(UnloadPrevLevel());
     }
 
+    // ==================== T3：卸载 ====================
+
     private IEnumerator UnloadPrevLevel()
     {
+        GameEvents.UnloadFade?.Invoke();   // 卸载淡出音效(注册式同步)
         unloading = true;
         Debug.Log("[LevelTransitionManager] T3: 直接卸载上一关", this);
 
-        // 卸载前一关（异步，后台执行，不影响玩家操作；不等待旧关出口门关闭）
+        // 卸载前一关（异步，后台执行，不影响玩家操作）
         var op = SceneManager.UnloadSceneAsync(prevScene);
         yield return op;
 
@@ -422,5 +434,6 @@ public class LevelTransitionManager : MonoBehaviour
         loadState = LoadState.Done;
         transitionTriggered = false;
         SceneManager.SetActiveScene(currentScene);
+        GameEvents.LevelReady?.Invoke(currentScene);   // 启动完成:开当前关卡环境音(注册式同步)
     }
 }

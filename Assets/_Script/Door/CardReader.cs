@@ -36,6 +36,7 @@ public class CardReader : MonoBehaviour
         if (manager != null && card.LevelIndex >= 0 && card.LevelIndex != manager.CurrentLevelIndex)
         {
             Debug.Log($"[CardReader] {name}: 这张卡属于第 {card.LevelIndex} 关，当前是第 {manager.CurrentLevelIndex} 关，拒绝刷卡", this);
+            GameEvents.CardDeny?.Invoke(transform.position);   // 刷卡被拒音效(注册式同步)
             return;
         }
 
@@ -68,11 +69,17 @@ public class CardReader : MonoBehaviour
             accepted = true;
         }
 
-        if (!accepted) return;   // 被管理器拒绝（刷错门 / 重复刷卡）：不给成功反馈
+        if (!accepted)
+        {
+            GameEvents.CardDeny?.Invoke(transform.position);   // 被管理器拒绝(刷错门/重复刷卡):拒绝音效
+            return;
+        }
 
         // 成功反馈：显示灯的第二种预设色（绿）
         if (successLight == null && door != null)
             successLight = door.GetComponentInChildren<LightColorAlternator>(true);
         if (successLight != null) successLight.ShowColor(true);
+
+        GameEvents.CardSuccess?.Invoke(transform.position);   // 刷卡成功音效(注册式同步)
     }
 }

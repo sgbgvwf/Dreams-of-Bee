@@ -28,8 +28,15 @@ public class Interactable : MonoBehaviour
     [SerializeField, Tooltip("交互类型（目前只有拾取）")]
     private InteractionType type = InteractionType.Pickup;
 
+    [SerializeField, Tooltip("被携带时的朝向修正：拾取后物品旋转 = 玩家身体旋转 × 此偏移。"
+        + "模型轴向各异的手持姿态（如手电光束朝向前方）在这里预先调好，一次配置所有拾取通用。")]
+    private Quaternion carryRotationOffset = Quaternion.identity;
+
     /// <summary>交互类型。子类可覆写为固定类型（如 Card 恒为 Pickup）。</summary>
     public virtual InteractionType Type => type;
+
+    /// <summary>被携带时叠加到身体旋转上的朝向偏移（BeeInteractionController 拾取时读取并应用）。</summary>
+    public Quaternion CarryRotationOffset => carryRotationOffset;
 
     /// <summary>玩家碰撞体，由 BeeInteractionController 在 Awake 时注入（玩家常驻，先于任何关卡交互物）。</summary>
     public static Collider PlayerCollider { get; set; }
@@ -38,13 +45,29 @@ public class Interactable : MonoBehaviour
     {
         // 拾取物永久不与玩家碰撞：静止、被携带、玩家撞上去都算（沿用旧 Pickable 层的规则）
         if (Type == InteractionType.Pickup && PlayerCollider != null)
+            ApplyCollisionIgnore();
+    }
+
+    private void ApplyCollisionIgnore()
+    {
+        foreach (var c in GetComponentsInChildren<Collider>(true))
         {
-            foreach (var c in GetComponentsInChildren<Collider>(true))
-            {
-                if (c == null || !c.enabled || c == PlayerCollider)
-                    continue;
-                Physics.IgnoreCollision(c, PlayerCollider, true);
-            }
+            if (c == null || !c.enabled || c == PlayerCollider)
+                continue;
+            Physics.IgnoreCollision(c, PlayerCollider, true);
         }
+    }
+
+    /// <summary>
+    /// 玩家碰撞体注入后，对已 Awake 的拾取物补做碰撞忽略。
+    /// 兜底时序：玩家场景与关卡并行加载时玩家可能晚于关卡激活，此时拾取物 Awake 时
+    /// PlayerCollider 还是 null，等 BeeInteractionController 注入后再补（幂等，重复调用无副作用）。
+    /// </summary>
+    public static void ReapplyPlayerCollisionIgnore()
+    {
+        if (PlayerCollider == null) return;
+        foreach (var interactable in FindObjectsByType<Interactable>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+            if (interactable.Type == InteractionType.Pickup)
+                interactable.ApplyCollisionIgnore();
     }
 }

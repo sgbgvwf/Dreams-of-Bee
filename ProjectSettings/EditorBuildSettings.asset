@@ -9,6 +9,9 @@ EditorBuildSettings:
     path: Assets/Scene/Persistance.unity
     guid: 6e20306f0f291a849b727c34256e9bcf
   - enabled: 1
+    path: Assets/Scene/Player.unity
+    guid: a84db0a1b1a03f04c86b5c266c80ba00
+  - enabled: 1
     path: Assets/Scene/Room_01.unity
     guid: 8124e5870f4fd4c779e7a5f994e84ad1
   - enabled: 1

@@ -8,6 +8,9 @@ using UnityEngine.Rendering.HighDefinition;
 ///   1. 用遮罩相机（仅作投影源）把描边物体的线性深度渲染进 MaskRT
 ///   2. 全屏合成：阈值化 → 膨胀相减得外轮廓 → 加法混合到主画面
 /// 挂在 CustomPassVolume 上，injectionPoint 建议 AfterPostProcess。
+/// 遮罩相机在 Player prefab 内（玩家是独立常驻场景）：outlineCamera 在 Inspector 直接绑定
+/// Player.prefab 内部的 Outline Camera（prefab 资产引用），玩家场景实例化后 Unity 自动把
+/// 该引用重写到实际实例上，跨场景成立。
 /// </summary>
 public class OutlineCompositePass : CustomPass
 {

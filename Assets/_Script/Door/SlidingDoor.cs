@@ -117,6 +117,11 @@ public class SlidingDoor : MonoBehaviour
     public void SetLocked(bool value)
     {
         locked = value;
+
+        // 上锁/解锁音效(启动预锁会有一声轻响,可接受)
+        var pos = door != null ? door.position : transform.position;
+        if (value) GameEvents.DoorLock?.Invoke(pos);
+        else GameEvents.DoorUnlock?.Invoke(pos);
     }
 
     /// <summary>
@@ -130,6 +135,13 @@ public class SlidingDoor : MonoBehaviour
 
     /// <summary>门是否已完全关闭（进度 0）。关卡切换系统用它判断关门完成后再卸载场景。</summary>
     public bool IsFullyClosed => progress <= 0f;
+
+    /// <summary>门板根 Transform（滑动的目标对象）。传送门系统读取它以确定门洞尺寸。</summary>
+    public Transform DoorPanel => door;
+
+    /// <summary>门板上的碰撞体（尺寸 = 门洞尺寸）。在门板对象及其子物体上查找，无门板时回退到组件自身。</summary>
+    public Collider DoorPanelCollider =>
+        door != null ? door.GetComponentInChildren<Collider>(true) : GetComponentInChildren<Collider>(true);
 
     private void SignalTo(bool opening)
     {
@@ -145,12 +157,21 @@ public class SlidingDoor : MonoBehaviour
         }
 
         // 锁定时忽略开门请求（关门不受锁限制，避免玩家被卡在半开门状态）
-        if (opening && locked) return;
+        if (opening && locked)
+        {
+            GameEvents.DoorDeny?.Invoke(door.position);   // 上锁拒绝音效(注册式同步)
+            return;
+        }
 
         if (!hasBaseline) CaptureBaseline();
         if (opening == targetOpen) return;   // already headed there: no-op
         targetOpen = opening;
         StartSlide();
+
+        // 注册式音效同步:门真正开始滑动时广播(OpenDoor/CloseDoor/ToggleDoor 全部汇入此处,守卫之后才响,不空响)
+        if (opening) GameEvents.DoorOpen?.Invoke(door.position);
+        else GameEvents.DoorClose?.Invoke(door.position);
+        GameEvents.DoorSlideStart?.Invoke(door);   // 滑门马达循环(中途反向时处理器先停旧再启新)
     }
 
     /// <summary>True while the door's target state is open.</summary>
@@ -188,6 +209,10 @@ public class SlidingDoor : MonoBehaviour
         // door never runs any per-frame work.
         door.position = Vector3.Lerp(closedPosition, openPosition, slideCurve.Evaluate(target));
         slideRoutine = null;
+
+        // 滑行结束:停马达循环 + 到位碰撞音
+        GameEvents.DoorSlideEnd?.Invoke(door);
+        GameEvents.DoorClunk?.Invoke(door.position);
     }
 
     private void CaptureBaseline()

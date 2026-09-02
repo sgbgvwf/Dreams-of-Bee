@@ -113,6 +113,7 @@ public class FlickeringLight : MonoBehaviour
                 currentBrightness = 0f;
                 targetBrightness = 0f;
                 nextChangeTime = Time.time + blackoutDuration;
+                GameEvents.FlickerCrackle?.Invoke(transform.position);   // 断电噼啪音效(每次黑屏恰响一次)
             }
             else
             {
