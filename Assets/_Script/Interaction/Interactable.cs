@@ -23,7 +23,7 @@ public enum InteractionType
 /// 取代旧 Pickable 层的 IgnoreLayerCollision 规则；collider 对级的忽略不受
 /// 描边切层影响，描边期间行为保持一致。
 /// </summary>
-public class Interactable : MonoBehaviour
+public class Interactable : MonoBehaviour, ISceneSaveable
 {
     [SerializeField, Tooltip("交互类型（目前只有拾取）")]
     private InteractionType type = InteractionType.Pickup;
@@ -32,8 +32,15 @@ public class Interactable : MonoBehaviour
         + "模型轴向各异的手持姿态（如手电光束朝向前方）在这里预先调好，一次配置所有拾取通用。")]
     private Quaternion carryRotationOffset = Quaternion.identity;
 
+    [SerializeField, Tooltip("物品唯一 Id（跨场景/后续功能识别用，如存档、状态判定。留空 = 不参与身份追踪）。"
+        + "现有物体不填则保持原样，不要求逐个配置。")]
+    private string itemId = "";
+
     /// <summary>交互类型。子类可覆写为固定类型（如 Card 恒为 Pickup）。</summary>
     public virtual InteractionType Type => type;
+
+    /// <summary>物品身份 Id（空串 = 未配置，不参与追踪）。PlayerStateSync 持物镜像读取。</summary>
+    public string ItemId => itemId;
 
     /// <summary>被携带时叠加到身体旋转上的朝向偏移（BeeInteractionController 拾取时读取并应用）。</summary>
     public Quaternion CarryRotationOffset => carryRotationOffset;
@@ -69,5 +76,40 @@ public class Interactable : MonoBehaviour
         foreach (var interactable in FindObjectsByType<Interactable>(FindObjectsInactive.Include, FindObjectsSortMode.None))
             if (interactable.Type == InteractionType.Pickup)
                 interactable.ApplyCollisionIgnore();
+    }
+
+    // === 存档 (ISceneSaveable:拾取物 = 世界位姿;恢复发生在全新场景实例上,先于任何游玩帧) ===
+    public string SaveableType => "Interactable";
+
+    public string CaptureToJson()
+    {
+        if (Type != InteractionType.Pickup) return "";
+        return JsonUtility.ToJson(new PickupState
+        {
+            position = transform.position,
+            rotation = transform.rotation,
+            localScale = transform.localScale,
+        });
+    }
+
+    public void RestoreFromJson(string json)
+    {
+        if (Type != InteractionType.Pickup) return;
+        var s = JsonUtility.FromJson<PickupState>(json);
+        if (s == null)
+        {
+            Debug.LogWarning($"[Interactable] {name}: 存档数据损坏，跳过拾取物状态恢复", this);
+            return;
+        }
+        // 刚体物体(卡片等):刚体位姿与 Transform 分开存储,两处都写,防物理步回跳
+        transform.SetPositionAndRotation(s.position, s.rotation);
+        transform.localScale = s.localScale;
+        var rb = GetComponent<Rigidbody>();
+        if (rb != null)
+        {
+            rb.position = s.position;
+            rb.rotation = s.rotation;
+        }
+        // 碰撞忽略已在全新实例的 Awake 建立;玩家若晚于关卡加载,由 ReapplyPlayerCollisionIgnore 兜底
     }
 }

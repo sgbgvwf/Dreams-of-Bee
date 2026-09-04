@@ -10,7 +10,7 @@ using UnityEngine;
 /// card - the reader's zone does the detecting).
 /// Attach to the card. Play Mode only.
 /// </summary>
-public class Card : Interactable
+public class Card : Interactable, IDoorKey
 {
     [SerializeField, Tooltip("归属关卡索引（0 起，与 LevelTransitionManager 的关卡列表一致；-1=不校验）。防止上一关的卡刷开下一关的门")]
     private int levelIndex = -1;
@@ -18,8 +18,11 @@ public class Card : Interactable
     /// <summary>卡片所属关卡索引（-1 = 未配置，不校验）。</summary>
     public int LevelIndex => levelIndex;
 
+    /// <summary>钥匙身份 Id = Interactable.itemId（读卡器 requiredItemId 配对用；空 = 不校验）。</summary>
+    public string KeyId => ItemId;
+
     /// <summary>卡片的交互类型恒为拾取。</summary>
     public override InteractionType Type => InteractionType.Pickup;
 
-    // Marker component: the reader detects cards by this component.
+    // Marker component: the reader detects cards by this component (now via IDoorKey).
 }

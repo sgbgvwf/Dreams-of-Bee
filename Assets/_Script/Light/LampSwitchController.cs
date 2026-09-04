@@ -8,7 +8,7 @@ using UnityEngine;
 /// 旋转永远从 Awake 基线重算，切换任意次都不漂移。
 /// 注意：进入 Play 时的开关姿态即 0° 基线（建模原始姿态一般为居中），脚本启动后按 Start On 摆到对应位置。
 /// </summary>
-public class LampSwitchController : MonoBehaviour, IInteractable
+public class LampSwitchController : MonoBehaviour, IInteractable, ISceneSaveable
 {
     public enum RotAxis { X, Y, Z }
 
@@ -58,6 +58,25 @@ public class LampSwitchController : MonoBehaviour, IInteractable
         if (IsOn == on) return;
         IsOn = on;
         ApplyState();
+    }
+
+    // === 存档 (ISceneSaveable:开关 = IsOn;恢复走幂等 SetOn,Awake 已在全新场景实例上摆好基线) ===
+    public string SaveableType => "LampSwitchController";
+
+    public string CaptureToJson()
+    {
+        return JsonUtility.ToJson(new LampState { on = IsOn });
+    }
+
+    public void RestoreFromJson(string json)
+    {
+        var s = JsonUtility.FromJson<LampState>(json);
+        if (s == null)
+        {
+            Debug.LogWarning($"[LampSwitchController] {name}: 存档数据损坏，跳过开关状态恢复", this);
+            return;
+        }
+        SetOn(s.on);
     }
 
     /// <summary>

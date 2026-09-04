@@ -269,7 +269,7 @@ MonoBehaviour:
   lightColor: {r: 1, g: 1, b: 1, a: 1}
   lightIntensity: 100
   lightRange: 30
-  emissionDivisor: 500
+  emissionDivisor: 50
 --- !u!1 &5767135274638006232
 GameObject:
   m_ObjectHideFlags: 0

@@ -1,4 +1,4 @@
-using UnityEngine;
+ using UnityEngine;
 using System.Collections;
 
 /// <summary>
@@ -21,7 +21,7 @@ using System.Collections;
 /// Note: doors are NOT Interactable - no pickup, no outline. They are driven
 /// by CardReader / LevelTransitionManager only.
 /// </summary>
-public class SlidingDoor : MonoBehaviour
+public class SlidingDoor : MonoBehaviour, ISceneSaveable
 {
     [SerializeField, Tooltip("The door's root Transform to slide. Drag it here.")]
     private Transform door;
@@ -113,9 +113,11 @@ public class SlidingDoor : MonoBehaviour
     /// <summary>
     /// 设置锁定：上锁后忽略一切开门请求（关门始终允许）。
     /// 关卡切换系统在玩家通过后上锁，防止玩家回头再开门。
+    /// 幂等：状态没变化直接返回，不重播音效（存档恢复 / 重复上锁防双响）。
     /// </summary>
     public void SetLocked(bool value)
     {
+        if (locked == value) return;
         locked = value;
 
         // 上锁/解锁音效(启动预锁会有一声轻响,可接受)
@@ -142,6 +144,27 @@ public class SlidingDoor : MonoBehaviour
     /// <summary>门板上的碰撞体（尺寸 = 门洞尺寸）。在门板对象及其子物体上查找，无门板时回退到组件自身。</summary>
     public Collider DoorPanelCollider =>
         door != null ? door.GetComponentInChildren<Collider>(true) : GetComponentInChildren<Collider>(true);
+
+    // === 存档 (ISceneSaveable:门 = locked + 目标开闭态;恢复先于任何游玩帧,基线是场景摆好的关闭位) ===
+    public string SaveableType => "SlidingDoor";
+
+    public string CaptureToJson()
+    {
+        return JsonUtility.ToJson(new DoorState { locked = IsLocked, open = IsOpen });
+    }
+
+    public void RestoreFromJson(string json)
+    {
+        var s = JsonUtility.FromJson<DoorState>(json);
+        if (s == null)
+        {
+            Debug.LogWarning($"[SlidingDoor] {name}: 存档数据损坏，跳过门状态恢复", this);
+            return;
+        }
+        SetLocked(s.locked);
+        if (s.open) OpenDoor();
+        else CloseDoor();
+    }
 
     private void SignalTo(bool opening)
     {

@@ -47,9 +47,30 @@ public class BeeInteractionController : MonoBehaviour
     private Rigidbody heldRb;
     private bool heldWasGravity;
     private Quaternion heldCarryOffset = Quaternion.identity;   // 手持姿态修正：拾取时从 Interactable.CarryRotationOffset 读取
+    private string heldItemId = "";                             // 持物身份（拾取时从 Interactable.ItemId 读取，供跨场景镜像）
 
     /// <summary>当前是否拿着物品（BeeFlightController 借此禁止攀爬）。</summary>
     public bool IsHolding => heldObject != null;
+
+    /// <summary>所持物品的 Id（Interactable.ItemId；空串 = 物品未配置身份或未持物）。PlayerStateSync 镜像读取。</summary>
+    public string HeldItemId => heldItemId;
+
+    /// <summary>当前所持物品的根 Transform（存档采集持物路径用；null = 未持物）。</summary>
+    public Transform HeldObject => heldObject;
+
+    /// <summary>直接拾起指定拾取物（读档恢复用：不走射线 / 交互键；手里已有东西则先放下）。</summary>
+    public void ForceHold(Transform target)
+    {
+        if (target == null) return;
+        if (heldObject != null) DropHeld();   // 防御:先放下手里的,恢复不会叠拿
+        PickUp(target);
+    }
+
+    /// <summary>直接放下当前持物（收局卸载关卡前调用，防止持物引用随场景卸载销毁后悬空）。</summary>
+    public void ForceDrop()
+    {
+        if (heldObject != null) DropHeld();
+    }
 
     private void Awake()
     {
@@ -128,12 +149,36 @@ public class BeeInteractionController : MonoBehaviour
 
     private void LateUpdate()
     {
+        // 持物被销毁（穿越传送门后物品所属旧场景卸载、或收局卸载关卡时，物品随场景一起被引擎销毁）：
+        // Unity 的对象比较让 heldObject 立即等于 null，Update 的按键分发因此走不到 DropHeld ——
+        // 刚体 / 碰撞体已随物体销毁，也根本没有可恢复的东西，只需清空手上状态：
+        // 不清理的话 IsHolding=false 但 heldItemId 残留旧值，PlayerStateSync 镜像 / 存档
+        // 会拿到"空手 + 旧持物"的矛盾状态。
+        if (heldObject == null)
+        {
+            if (heldColliders != null)   // 非空 = 曾拾起且未正常放下 → 是随场景销毁的持物
+                ClearHeldState();
+            return;
+        }
+
         // Carry: keep the item rigidly attached to the player at a fixed body-local offset.
         // 物品相对身体的位置与朝向永远不变：身体(跟随摄像机朝向 / 爬行贴面)怎么旋转，物品就跟着怎么转。
-        if (heldObject == null) return;
-
         heldObject.position = transform.TransformPoint(0f, -carryHeight, 0f);
         heldObject.rotation = transform.rotation * heldCarryOffset;
+    }
+
+    /// <summary>
+    /// 持物随场景卸载被销毁后的清场：只清空手上状态（引用 / 身份），不恢复物体物理。
+    /// 正常放下走 DropHeld（先恢复重力与碰撞体再清状态）；销毁路径里物体已不存在，无物可恢复。
+    /// </summary>
+    private void ClearHeldState()
+    {
+        heldColliders = null;
+        heldObject = null;
+        heldRb = null;
+        heldWasGravity = false;
+        heldCarryOffset = Quaternion.identity;
+        heldItemId = "";
     }
 
     /// <summary>
@@ -174,6 +219,7 @@ public class BeeInteractionController : MonoBehaviour
         // 拾取瞬间与携带全程统一应用，不同模型轴向的手持姿态一次配置永久解决。
         var interactable = target.GetComponentInParent<Interactable>();
         heldCarryOffset = interactable != null ? interactable.CarryRotationOffset : Quaternion.identity;
+        heldItemId = interactable != null ? interactable.ItemId : "";   // 持物身份同步给跨场景镜像
 
         heldRb = heldObject.GetComponent<Rigidbody>();
         if (heldRb != null)
@@ -214,6 +260,7 @@ public class BeeInteractionController : MonoBehaviour
         heldObject = null;
         heldRb = null;
         heldCarryOffset = Quaternion.identity;
+        heldItemId = "";
 
         GameEvents.Drop?.Invoke(transform.position + Vector3.down * carryHeight);   // 掉落音效(3D,在掉落地)
     }

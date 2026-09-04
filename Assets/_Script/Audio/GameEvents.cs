@@ -60,4 +60,10 @@ public static class GameEvents
     // === 灯 ===
     /// <summary>闪烁灯断电瞬间(载荷:灯位置)。</summary>
     public static Action<Vector3> FlickerCrackle;
+
+    // === 流程(菜单 / 结局;音频侧可后续注册,目前无处理器) ===
+    /// <summary>游戏流程状态切换(主菜单 ↔ 游玩 ↔ 结局 ↔ 开发者直玩)。</summary>
+    public static Action FlowStateChanged;
+    /// <summary>结局被触发(载荷:结局 id)。</summary>
+    public static Action<string> EndingReached;
 }

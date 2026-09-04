@@ -132,6 +132,10 @@ public class BeeFlightController : MonoBehaviour
 
     private void Update()
     {
+        // 暂停菜单打开时让出控制:HandleCursor 每帧会锁回菜单释放的光标,
+        // 其余输入 / 体力结算本就靠 controlled(光标锁定)门控,timeScale=0 已冻结物理与增量。
+        if (PauseMenu.IsPaused) return;
+
         HandleCursor();
 
         bool controlled = Cursor.lockState == CursorLockMode.Locked && cameraTransform != null;
@@ -231,6 +235,36 @@ public class BeeFlightController : MonoBehaviour
 
     /// <summary>摄像机当前旋转（yaw → pitch）。传送门系统用它计算门后渲染相机的姿态。</summary>
     public Quaternion CameraRotation => GetCameraRotation();
+
+    /// <summary>
+    /// 读档恢复（流程在关卡场景加载完成、恢复场景物件之后调用，任何游玩帧之前）：
+    /// 从存档快照还原刚体位姿 / 速度 / 视线 / 体力，并清掉陈旧接触 ——
+    /// 状态由下一物理步按新场景重新推导（通常落回入口地面 → Crawling），不广播状态事件。
+    /// </summary>
+    public void RestoreFromSnapshot(PlayerSnapshot s)
+    {
+        if (rb == null) return;
+
+        rb.position = s.position;
+        rb.rotation = s.rotation;
+        rb.velocity = s.velocity;
+        transform.localScale = s.localScale;
+
+        // 视线:yaw / pitch 从存档视线分解(与 CaptureInitialLook / ApplyPortalTransform 同式)
+        Vector3 fwd = s.lookRotation * Vector3.forward;
+        yaw = Mathf.Atan2(fwd.x, fwd.z) * Mathf.Rad2Deg;
+        pitch = -Mathf.Asin(Mathf.Clamp(fwd.y, -1f, 1f)) * Mathf.Rad2Deg;
+
+        stamina = Mathf.Clamp(s.stamina, 0f, maxStamina);
+        StaminaChanged?.Invoke(stamina);   // HUD 立即同步一次,不等下一次体力结算
+
+        // 传送 / 恢复都不触发 OnCollisionExit:清陈旧接触,下一物理步按新场景重新推导
+        hasContact = false;
+        contactNormal = Vector3.up;
+        state = BeeState.Falling;
+
+        Physics.SyncTransforms();   // 项目 AutoSyncTransforms=0:立即同步,防恢复后一帧物理回跳
+    }
 
     /// <summary>
     /// 传送门穿过：把玩家位姿 / 速度 / 视角按"门 A → 门 B"的相对变换映射到新关。
