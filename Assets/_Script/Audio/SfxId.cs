@@ -10,7 +10,6 @@ public enum SfxId
     Landing,          // 落地
     FallStart,        // 开始下落
     CrawlStep,        // 爬行脚步
-    WingBuzz,         // 翅膀振翅(循环)
     FallWind,         // 下落风声(循环)
 
     // === 交互 ===
@@ -37,7 +36,6 @@ public enum SfxId
     TransitionWhoosh, // 过渡开始
     LevelConfirm,     // 关卡切换确认
     UnloadFade,       // 关卡卸载淡出
-    RoomAmbient,      // 房间环境音(循环)
 
     // === 灯 ===
     FlickerBuzz,      // 灯闪烁嗡鸣(循环)

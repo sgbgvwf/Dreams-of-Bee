@@ -1,12 +1,12 @@
 using System;
 using UnityEngine;
-using UnityEngine.SceneManagement;
 
 /// <summary>
 /// 全局音效事件总线(注册式同步):
 /// 玩法方法在动作发生的瞬间 raise 对应事件,AudioManager 在 Awake 注册全部处理器,
 /// 同一调用栈内同步响应播放。玩法脚本不接触任何音频 API,只管广播;
-/// 一次性音效不做去重 —— 方法每触发一次就播一次(音效可以重复)。
+/// 玩法侧照常每次触发都广播,去重在 AudioManager 内做:同款一次性音效带极小播放冷却
+/// (OneShotCooldown 0.05s),同帧 / 瞬间连发的重复只响一次;循环音不受冷却(多源合法并存)。
 /// 声明为普通静态委托字段(非 C# event),这样玩法侧可以直接 ?.Invoke() 广播;
 /// 约定:注册只能走 +=,不对外赋值/清空。
 /// </summary>
@@ -54,8 +54,6 @@ public static class GameEvents
     public static Action LevelConfirm;
     /// <summary>上一关卸载淡出。</summary>
     public static Action UnloadFade;
-    /// <summary>关卡就绪(启动完成或出口门已开,载荷:就绪的关卡场景)→ 切换环境音。</summary>
-    public static Action<Scene> LevelReady;
 
     // === 灯 ===
     /// <summary>闪烁灯断电瞬间(载荷:灯位置)。</summary>

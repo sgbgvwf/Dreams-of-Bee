@@ -26,13 +26,17 @@ using UnityEditor;
 ///     每次"到达新关站稳"(Begin* 完成 / T2 穿越 + T3 卸载完成)会触发 Settled 事件 → 流程自动存档。
 ///
 /// 通用请求区(封装层 —— 一切"转换到别的场景"的公开入口,见 Request* 方法):
-///   - RequestExitKeyed(door):刷卡门(门演出路径,T0–T3,原地保留);
-///   - RequestDirectSwitch(path):无门直达换场景(无演出;调试 / 演示 / 选关用);
+///   - RequestExitKeyed(door[, key]):刷卡门(门演出路径,T0–T3)。目的地 = 刷卡钥匙(Card)携带,
+///     刷卡瞬间裁决并加载(最近一次刷卡生效;过渡中未穿过前换卡重刷 = 关门卸旧目标、载新目标;
+///     卡没配目的地 / 无卡 → 报错拒绝,目的地唯一权威是卡);
+///   - RequestDirectSwitch(path[, landing]):无门直达换场景(无演出;调试 / 演示 / 选关用;
+///     可选落点 = 目标关出生点 PlayerSpawnPoint / 保持原位,见 PlayerLanding);
 ///   - 结局 / 主菜单请求跨流程状态与存档收局,归 GameFlowManager(TriggerEnding / QuitToMenu),
-///     刷卡门"结局门"仍经 EndingRequested 事件交给流程;
-///   - 本层只负责"当前是哪个关卡、何时加载、加载哪一个";玩家落点与钥匙语义不属于本层
-///     (门演出路径的落点由 PortalDoor 负责;直达路径的落点由调用方自理)。
-/// 每场景配套的薄 Facade 组件见 SceneTransition.cs(场景 UI 按钮经它调用上述请求)。
+///     刷卡门"结局门"(卡的 Destination = Ending)仍经 EndingRequested 事件交给流程;
+///   - 玩家落点分工:门演出路径的落点由 PortalDoor + 目标关 Entry 锚点负责(相对位姿映射);
+///     开局 / 直达的落点由本层 PlayerSpawnPoint 机制负责(有标记才传送,缺省保持旧行为)。
+///     钥匙归属(关卡/身份)归读卡器校验;"刷卡去哪" = 卡上目的地,本层裁决执行。
+/// 每场景配套的薄 Facade 组件见 SceneTransition.cs(场景 UI 按钮经它调用上述请求,可配置直达落点)。
 ///
 /// 过渡时序(严格遵循,保持原样):
 ///   T0 玩家在出口读卡器上刷卡成功 → 后台异步加载目的地关(门保持关闭且锁定 —— 关闭的门本身就是屏障)
@@ -51,8 +55,11 @@ using UnityEditor;
 /// 新增一关(单向关卡图)全流程:
 ///   1) 新建场景并摆内容; 2) 加入 Build Settings 并拖进本管理器 Inspector 的 Levels 列表(顺序=线性默认序);
 ///   3) 场景入口门洞放 Entry 锚点; 4) 出口门洞放 Exit 锚点(挂 SlidingDoor 门引用 + PortalDoor);
-///   5) 出口门 SlidingDoor.LevelIndex = 该关在列表的序号(与卡片配对); 6) 刷卡通过 → 默认去线性下一关,
-///      想分支就在 Exit 锚点上改 DestinationKind / 拖目标场景 / 填结局 id。核心零改动。
+///   5) 出口门 SlidingDoor.LevelIndex = 该关在列表的序号(门归属校验,防锚点误配别的关的门);
+///   6) 每张出口卡配好目的地(Card 组件:LinearNext/Scene/Ending),刷卡通过 → 去卡上目的地;
+///      换卡重刷 = 关门换目标。核心零改动。
+///   (可选)开局 / 直达的落点:关卡开局位置摆一个 PlayerSpawnPoint 出生点 —— 有标记时
+///   BeginRun / 带落点的 RequestDirectSwitch 把玩家放到那,没标记时保持旧行为(原位),不摆也能跑。
 /// </summary>
 public class LevelTransitionManager : MonoBehaviour
 {
@@ -97,12 +104,27 @@ public class LevelTransitionManager : MonoBehaviour
     /// <summary>结局门（出口目的地 = Ending）被刷卡时触发（载荷：结局 id）。无监听者（开发者直玩等）则只开门不换场。</summary>
     public event System.Action<string> EndingRequested;
 
-    // === 一口出口的运行时配置（一个出口锚点 = 一扇门 + 一个可选的传送门 + 一个目的地） ===
+    // === 一口出口的运行时配置（一个出口锚点 = 一扇门 + 一个可选的传送门） ===
     private sealed class ExitPortal
     {
-        public LevelAnchor anchor;      // 出口锚点（目的地配置所在）
+        public LevelAnchor anchor;      // 出口锚点（门洞参照 / 穿门基准）
         public SlidingDoor door;        // 出口门
         public PortalDoor portal;       // 出口锚点上的传送门（T1 激活；可空）
+    }
+
+    /// <summary>刷卡瞬间从卡裁决出的目的地（Card 携带；本层只负责装载执行）。</summary>
+    private readonly struct ResolvedDestination
+    {
+        public readonly LevelAnchor.DestinationKind kind;
+        public readonly string scenePath;   // kind = Scene 时有效
+        public readonly string endingId;    // kind = Ending 时有效
+
+        public ResolvedDestination(LevelAnchor.DestinationKind kind, string scenePath, string endingId)
+        {
+            this.kind = kind;
+            this.scenePath = scenePath;
+            this.endingId = endingId;
+        }
     }
 
 #if UNITY_EDITOR
@@ -139,6 +161,11 @@ public class LevelTransitionManager : MonoBehaviour
     private bool settled;                       // 稳定点（无任何加载 / 卸载 / 待穿越过渡）
     private bool busyActive;                    // 生命周期协程(Begin*/EndRun)占用中,防重入
     private ExitPortal pendingPortal;           // 卸载期间刷的新出口门 → 卸载完成后续传
+    private ResolvedDestination pendingDestination;  // 与 pendingPortal 配套的刷卡目的地(卸载窗口暂存)
+    private Coroutine loadRoutine;              // 当前 T0→T1 加载协程(换卡重刷时先等它退场)
+    private AsyncOperation loadOp;              // 当前加载的异步操作(换卡重刷时放行旧加载)
+    private int loadGeneration;                 // 加载代际:每次发起过渡自增;协程凭代际识别自己被换掉
+    private string activeDestPath;              // 本次过渡正在加载/已加载的目标场景路径(换卡重刷时卸载旧目标用)
 
     private Scene currentScene;                 // 当前关卡场景
     private Scene nextScene;                    // 正在加载的目的地关场景（T1 激活目标）
@@ -269,6 +296,13 @@ public class LevelTransitionManager : MonoBehaviour
             yield break;
         }
 
+        // 一帧:等新场景组件 Start 跑完(同读档 ApplyRestoreRoutine 的等待),否则玩家 Start 的
+        // CaptureInitialLook 会在出生点传送之后才执行、覆盖出生朝向
+        yield return null;
+
+        // 玩家放到目标关默认出生点(PlayerSpawnPoint;没摆标记 → 保持旧行为:Player 场景编好的位姿)
+        PlacePlayerAtSpawn(currentScene, PlayerLanding.LevelSpawnPoint);
+
         // 解析当前关全部出口门并预锁（下一段过渡的门口）
         ResolveExitsForCurrentLevel();
         SetSettled(true);
@@ -353,6 +387,11 @@ public class LevelTransitionManager : MonoBehaviour
         activePortal = null;
         entryAnchor = null;
         pendingPortal = null;
+        pendingDestination = default;
+        loadRoutine = null;
+        loadOp = null;
+        activeDestPath = null;
+        loadGeneration++;   // 令任何残留加载协程在自检点退出
         transitionTriggered = false;
         passFinalized = false;
         unloading = false;
@@ -438,15 +477,67 @@ public class LevelTransitionManager : MonoBehaviour
             Debug.Log($"[LevelTransitionManager] {currentScene.name} 出口门已解析并锁定，共 {exitPortals.Count} 道", this);
     }
 
+    // ==================== 玩家落点（无门转换的开局 / 直达落点；门演出路径不受影响） ====================
+
+    /// <summary>关卡转换完成后的玩家落点模式（只作用于无门路径：BeginRun 开局 / RequestDirectSwitch 直达）。
+    /// 门演出路径的落点仍由 PortalDoor 把玩家相对出口锚点的位姿映射到目标关 Entry 锚点，与此无关。</summary>
+    public enum PlayerLanding
+    {
+        /// <summary>保持原位不动（旧行为；直达路径默认，需要落点请显式选 LevelSpawnPoint）。</summary>
+        KeepCurrent,
+        /// <summary>落到目标关的默认出生点（PlayerSpawnPoint；目标关没摆标记 → 保持原位并留日志）。</summary>
+        LevelSpawnPoint,
+    }
+
+    /// <summary>把玩家放到 levelScene 的默认出生点（landing = LevelSpawnPoint 时）。
+    /// 无标记 / 无玩家 / 无控制器 → 记录日志并保持原位（向后兼容：老关没摆出生点 = 旧行为），绝不抛错。
+    /// 传送先于 SetSettled 执行 —— Settled 后的自动存档必然采到出生点位姿。</summary>
+    private void PlacePlayerAtSpawn(Scene levelScene, PlayerLanding landing)
+    {
+        if (landing == PlayerLanding.KeepCurrent) return;
+
+        var spawn = PlayerSpawnPoint.FindDefault(levelScene);
+        if (spawn == null)
+        {
+            Debug.Log($"[LevelTransitionManager] {levelScene.name} 没有出生点(PlayerSpawnPoint)，玩家保持原位", this);
+            return;
+        }
+
+        var player = GameObject.FindGameObjectWithTag("Player");
+        if (player == null)
+        {
+            Debug.LogWarning("[LevelTransitionManager] 找不到玩家（tag \"Player\"），跳过出生点落位", this);
+            return;
+        }
+        var flight = player.GetComponent<BeeFlightController>();
+        if (flight == null)
+        {
+            Debug.LogWarning("[LevelTransitionManager] 玩家缺少 BeeFlightController，跳过出生点落位", this);
+            return;
+        }
+
+        flight.TeleportTo(spawn.transform.position, spawn.transform.eulerAngles.y);
+        Debug.Log($"[LevelTransitionManager] 玩家已放到 {levelScene.name} 出生点 {spawn.name}", this);
+    }
+
     // ==================== 通用请求区（封装层：刷卡门 / 场景组件 / 内容的唯一公开入口） ====================
 
     /// <summary>
-    /// 出口门刷卡（门演出路径, T0）：读卡器读到了本关任意出口门的钥匙
-    /// （CardReader 调用,归属校验已在读卡器侧按门完成;场景组件与内容也可直接调）。
-    /// 刷卡只负责触发过渡；门的开/关时机全部由管理器控制（加载完成才开门）。
-    /// 只允许在稳定点刷卡；恢复 / 加载 / 卸载期一律拒绝（卸载窗口的刷卡会挂起续传）。
+    /// 出口门刷卡（门演出路径, T0）：读卡器读到了本关出口门的钥匙（CardReader 调用,
+    /// 归属校验已在读卡器侧按门完成）。目的地唯一权威 = 卡 —— 刷卡瞬间从卡读取
+    /// 目的地并加载（最近一次刷卡生效）。过渡未穿过前再刷另一张卡 = 换目标:
+    /// 先关门上锁 → 停/卸已载目标 → 载新目标 → 开门放行。
+    /// 门的开/关时机全部由管理器控制（加载完成才开门）。
+    /// 只允许在稳定点刷卡；恢复 / 卸载期一律拒绝（卸载窗口的刷卡会挂起续传）。
     /// </summary>
-    public bool RequestExitKeyed(SlidingDoor swipedDoor)
+    public bool RequestExitKeyed(SlidingDoor swipedDoor) =>
+        RequestExitKeyedCore(swipedDoor, null);   // 旧调用不带卡:出口门无目的地来源 → 报错拒绝
+
+    /// <summary>出口门刷卡 + 钥匙（CardReader 用;目的地从这张卡读取）。</summary>
+    public bool RequestExitKeyed(SlidingDoor swipedDoor, IDoorKey key) =>
+        RequestExitKeyedCore(swipedDoor, key);
+
+    private bool RequestExitKeyedCore(SlidingDoor swipedDoor, IDoorKey key)
     {
         if (swipedDoor == null) return false;
 
@@ -459,16 +550,33 @@ public class LevelTransitionManager : MonoBehaviour
             return false;
         }
 
+        // 刷卡瞬间裁决目的地(唯一权威 = 卡;卡没配/配错 → 报错拒绝,不做兜底)
+        if (!TryResolveCardDestination(key, out var dest))
+            return false;
+
         if (transitionTriggered)
         {
-            Debug.Log("[LevelTransitionManager] 已触发过过渡，忽略重复刷卡", this);
-            return false;
+            // 门未穿过 → 允许换卡换目的地;已穿过(结算完) → 单向门拒绝
+            if (passFinalized)
+            {
+                Debug.Log("[LevelTransitionManager] 本次过渡已穿过结算，拒绝重复刷卡（单向门）", this);
+                return false;
+            }
+            if (portal != activePortal)
+            {
+                Debug.Log("[LevelTransitionManager] 已有其他出口门在过渡中，只允许重刷当前这道门", this);
+                return false;
+            }
+            Debug.Log($"[LevelTransitionManager] 换卡重刷：目的地改为 kind={dest.kind}", this);
+            StartCoroutine(RetargetRoutine(portal, dest));
+            return true;
         }
 
-        // 卸载上一关窗口内刷了刚进入的这关的门：挂起，卸载完成后自动续传（防"卸载中加载"状态冲突）
+        // 卸载上一关窗口内刷了刚进入的这关的门：挂起(同存目的地),卸载完成后自动续传
         if (unloading)
         {
             pendingPortal = portal;
+            pendingDestination = dest;
             transitionTriggered = true;
             Debug.Log("[LevelTransitionManager] 正在卸载上一关，刷卡挂起，卸载完成后继续", this);
             return true;
@@ -480,7 +588,27 @@ public class LevelTransitionManager : MonoBehaviour
             return false;
         }
 
-        AdvanceTransition(portal);
+        AdvanceTransition(portal, dest);
+        return true;
+    }
+
+    /// <summary>从刷卡钥匙裁决目的地：只认 Card 携带的目的地;没配/缺目标 → 报错并返回 false。</summary>
+    private bool TryResolveCardDestination(IDoorKey key, out ResolvedDestination dest)
+    {
+        dest = default;
+        var card = key as Card;
+        if (card == null)
+        {
+            Debug.LogError("[LevelTransitionManager] 刷卡钥匙没有目的地(出口门的目的地唯一权威是卡:请用带 Card 的刷卡,并在卡上配置 Destination Kind)。刷卡被拒", this);
+            return false;
+        }
+        string hint = card.DiagnosticHint;
+        if (!string.IsNullOrEmpty(hint))
+        {
+            Debug.LogError(hint + " —— 刷卡被拒", this);
+            return false;
+        }
+        dest = new ResolvedDestination(card.DestinationKind, card.DestinationScenePath, card.DestinationEndingId);
         return true;
     }
 
@@ -490,8 +618,8 @@ public class LevelTransitionManager : MonoBehaviour
     /// <summary>（更早的旧名保留：等价于 RequestExitKeyed。）</summary>
     public bool OnCardSwiped(SlidingDoor swipedDoor) => RequestExitKeyed(swipedDoor);
 
-    /// <summary>开始一道出口门的过渡（防重闸已在调用方完成）。</summary>
-    private void AdvanceTransition(ExitPortal portal)
+    /// <summary>开始一道出口门的过渡（目的地已由刷卡瞬间裁决）。</summary>
+    private void AdvanceTransition(ExitPortal portal, ResolvedDestination dest)
     {
         GameEvents.TransitionStart?.Invoke();   // 过渡开始音效(注册式同步)
 
@@ -500,103 +628,151 @@ public class LevelTransitionManager : MonoBehaviour
         passFinalized = false;                  // 新一轮过渡：重置上次过渡的结算状态
         nextScene = default;
 
-        var kind = portal.anchor.Destination;
         bool noLinearNext = currentLevelIndex < 0 || currentLevelIndex + 1 >= levelPaths.Length;
-        if (kind == LevelAnchor.DestinationKind.LinearNext && noLinearNext)
+        if (dest.kind == LevelAnchor.DestinationKind.LinearNext && noLinearNext)
         {
-            // 线性序列的最后一关(或当前关不在列表 —— 分支目的地未配出口时误配兜底)：
-            // 没有下一关可加载，直接解锁开门（可作关卡终点门）。
-            // 稳定点保持 —— 玩家可正常存档 / 返回菜单；这道门已被消费，不会二次触发。
-            Debug.Log($"[LevelTransitionManager] 已是线性最后一关(序数 {currentLevelIndex})，没有下一关可加载；如需去往其他关/结局，请在出口锚点上配置 Destination");
+            // 线性序列的最后一关(或当前关不在列表):这张卡想去"列表下一关"但没有下一关。
+            // 直接解锁开门(可作关卡终点门);稳定点保持,这道门已被消费不会二次触发。
+            Debug.Log($"[LevelTransitionManager] 已是线性最后一关(序数 {currentLevelIndex})，没有下一关可加载；如需去往其他关/结局，请把这张卡的 Destination 配成 Scene/Ending");
             loadState = LoadState.Done;
             portal.door.SetLocked(false);
             portal.door.OpenDoor();
             return;
         }
 
-        if (kind == LevelAnchor.DestinationKind.Ending)
+        if (dest.kind == LevelAnchor.DestinationKind.Ending)
         {
             // 结局门：不加载关卡，通知流程进入结局（流程负责淡出 / 收局 / Room_00 演出）。
-            Debug.Log($"[LevelTransitionManager] 结局门被刷卡：触发结局 [{portal.anchor.EndingId}]");
+            Debug.Log($"[LevelTransitionManager] 结局卡被刷卡：触发结局 [{dest.endingId}]");
             loadState = LoadState.Done;
-            EndingRequested?.Invoke(portal.anchor.EndingId);
+            EndingRequested?.Invoke(dest.endingId);
             return;
         }
 
-        string destPath = kind == LevelAnchor.DestinationKind.Scene
-            ? portal.anchor.DestinationScenePath
+        string destPath = dest.kind == LevelAnchor.DestinationKind.Scene
+            ? dest.scenePath
             : levelPaths[currentLevelIndex + 1];
 
         if (string.IsNullOrEmpty(destPath))
         {
-            Debug.LogError($"[LevelTransitionManager] 出口 {portal.anchor.name} 的目的地为空，刷卡无效", this);
+            Debug.LogError($"[LevelTransitionManager] 刷卡目的地场景为空，刷卡无效（卡 {dest.kind}）", this);
             transitionTriggered = false;
             return;
         }
         if (destPath == currentScene.path)
         {
             // 单向约束：目标是本关自身视为误配（框架不做回访 / 重入）
-            Debug.LogError($"[LevelTransitionManager] 出口 {portal.anchor.name} 的目标与本关相同，单向框架禁止回访，刷卡无效", this);
+            Debug.LogError($"[LevelTransitionManager] 刷卡目的地与本关相同，单向框架禁止回访，刷卡无效", this);
             transitionTriggered = false;
             return;
         }
 
         // T0：只启动后台加载。门保持关闭且锁定 —— 加载完成前玩家不可能通过，
         //     门打开时目的地关必然已经加载完成（见 LoadNextAndOpen）。
+        activeDestPath = destPath;
         loadState = LoadState.Loading;
         SetSettled(false);
         Debug.Log($"[LevelTransitionManager] T0: 刷卡成功，后台加载目的地 {destPath}（门保持关闭）", this);
-        StartCoroutine(LoadNextAndOpen(destPath, portal));
+        loadRoutine = StartCoroutine(LoadNextAndOpen(destPath, portal));
     }
 
     // ==================== T1：加载 + 开门 ====================
 
     private IEnumerator LoadNextAndOpen(string destPath, ExitPortal portal)
     {
+        int gen = loadGeneration;   // 本趟加载的代际：换卡重刷(RetargetRoutine)把代际自增后，本趟在自检点退出
         float startTime = Time.time;   // T0 时刻：用于让"门保持关闭"阶段可见
-        var op = SceneManager.LoadSceneAsync(destPath, LoadSceneMode.Additive);
-        if (op == null)
+        try
         {
-            Debug.LogError($"[LevelTransitionManager] 场景加载失败（op 为 null）：{destPath}", this);
-            loadState = LoadState.Idle;
-            SetSettled(true);
-            yield break;
-        }
+            var op = SceneManager.LoadSceneAsync(destPath, LoadSceneMode.Additive);
+            loadOp = op;
+            if (op == null)
+            {
+                Debug.LogError($"[LevelTransitionManager] 场景加载失败（op 为 null）：{destPath}", this);
+                loadState = LoadState.Idle;
+                if (gen == loadGeneration) SetSettled(true);
+                yield break;
+            }
 
-        // 先加载内容、不激活：保证场景激活时已完成全部准备，玩家看不到"未就位画面"
-        op.allowSceneActivation = false;
-        while (op.progress < 0.9f)
+            // 先加载内容、不激活：保证场景激活时已完成全部准备，玩家看不到"未就位画面"
+            op.allowSceneActivation = false;
+            while (op.progress < 0.9f)
+                yield return null;
+
+            if (simulatedLoadDelay > 0f)
+                yield return new WaitForSeconds(simulatedLoadDelay);   // 仅测试：模拟慢加载
+
+            // 换卡重刷会先放行旧加载（allowSceneActivation = true）让本趟尽快收尾
+            op.allowSceneActivation = true;
+            yield return op;
+
+            // 自检点：本趟已被换卡重刷顶掉 → 直接退场，卸载由 RetargetRoutine 负责
+            if (gen != loadGeneration) yield break;
+
+            // T1：加载完成 → 激活新场景并解析入口锚点（传送门位姿基准）→ 解锁开门。
+            //     门打开时目的地关已完整就位：玩家看到门后画面的瞬间它已存在，无任何加载痕迹。
+            nextScene = SceneManager.GetSceneByPath(destPath);
+            SceneManager.SetActiveScene(nextScene);
+            entryAnchor = LevelAnchor.FindAnchor(nextScene, LevelAnchor.AnchorType.Entry);
+            if (entryAnchor == null)
+                Debug.LogError($"[LevelTransitionManager] 目的地 {nextScene.name} 缺少入口锚点（LevelAnchor Entry），传送门无法工作", this);
+            loadState = LoadState.Done;
+
+            // 顺序保证：加载已在上方完成；门再等满 minDoorCloseTime 才打开，
+            // 让"拾卡 → 门保持关闭 → 加载 → 开门"的顺序可见（加载瞬间完成时也先关够时间）。
+            float remaining = minDoorCloseTime - (Time.time - startTime);
+            if (remaining > 0f)
+                yield return new WaitForSeconds(remaining);
+
+            if (gen != loadGeneration) yield break;   // 等门期间被换卡：不再开门/激活
+
+            portal.door.SetLocked(false);
+            portal.door.OpenDoor();
+            // 传送门与门同步激活：门开瞬间门面即显示目的地关实时画面
+            if (portal.portal != null && entryAnchor != null)
+                portal.portal.Activate(entryAnchor);
+
+            Debug.Log($"[LevelTransitionManager] T1: 目的地 {nextScene.name} 加载完成，门开启（刷卡到开门共 {Time.time - startTime:F2}s）", this);
+        }
+        finally
+        {
+            loadRoutine = null;
+            loadOp = null;
+        }
+    }
+
+    /// <summary>
+    /// 换卡重刷：门已触发过渡但未穿过，再刷另一张卡 → 按用户要求顺序换目标：
+    /// 先关门上锁（门 = 屏障）→ 让旧加载收尾并卸载旧目标 → 载新目标（重走 T0→T1）。
+    /// </summary>
+    private IEnumerator RetargetRoutine(ExitPortal portal, ResolvedDestination dest)
+    {
+        // 1. 先关门上锁：门是物理屏障，旧目标卸载后玩家也穿不过去
+        portal.door.SetLocked(true);
+        portal.door.CloseDoor();
+        PortalPoseSO.Instance?.Deactivate();   // 门面显示停(旧目标画面作废)
+
+        // 2. 顶掉旧加载：放行旧异步加载 → 旧协程在自检点(gen 不符)退出；等它完全退场
+        loadGeneration++;
+        if (loadOp != null && !loadOp.isDone)
+            loadOp.allowSceneActivation = true;
+        while (loadRoutine != null)
             yield return null;
 
-        if (simulatedLoadDelay > 0f)
-            yield return new WaitForSeconds(simulatedLoadDelay);   // 仅测试：模拟慢加载
+        // 3. 卸载旧目标（若已加载进来；activeDestPath 为本趟目标）
+        if (!string.IsNullOrEmpty(activeDestPath))
+        {
+            var oldScene = SceneManager.GetSceneByPath(activeDestPath);
+            if (oldScene.IsValid() && oldScene.isLoaded)
+            {
+                var uop = SceneManager.UnloadSceneAsync(oldScene);
+                if (uop != null) yield return uop;
+            }
+        }
+        Resources.UnloadUnusedAssets();
 
-        op.allowSceneActivation = true;
-        yield return op;
-
-        // T1：加载完成 → 激活新场景并解析入口锚点（传送门位姿基准）→ 解锁开门。
-        //     门打开时目的地关已完整就位：玩家看到门后画面的瞬间它已存在，无任何加载痕迹。
-        nextScene = SceneManager.GetSceneByPath(destPath);
-        SceneManager.SetActiveScene(nextScene);
-        entryAnchor = LevelAnchor.FindAnchor(nextScene, LevelAnchor.AnchorType.Entry);
-        if (entryAnchor == null)
-            Debug.LogError($"[LevelTransitionManager] 目的地 {nextScene.name} 缺少入口锚点（LevelAnchor Entry），传送门无法工作", this);
-        loadState = LoadState.Done;
-
-        // 顺序保证：加载已在上方完成；门再等满 minDoorCloseTime 才打开，
-        // 让"拾卡 → 门保持关闭 → 加载 → 开门"的顺序可见（加载瞬间完成时也先关够时间）。
-        float remaining = minDoorCloseTime - (Time.time - startTime);
-        if (remaining > 0f)
-            yield return new WaitForSeconds(remaining);
-
-        portal.door.SetLocked(false);
-        portal.door.OpenDoor();
-        // 传送门与门同步激活：门开瞬间门面即显示目的地关实时画面
-        if (portal.portal != null && entryAnchor != null)
-            portal.portal.Activate(entryAnchor);
-        GameEvents.LevelReady?.Invoke(nextScene);   // 门开瞬间同步切换新关环境音(注册式同步)
-
-        Debug.Log($"[LevelTransitionManager] T1: 目的地 {nextScene.name} 加载完成，门开启（刷卡到开门共 {Time.time - startTime:F2}s）", this);
+        // 4. 载新目标（重走 T0→T1:加载 → 开门 → 门面复活）
+        AdvanceTransition(portal, dest);
     }
 
     // ==================== T2：穿过结算 ====================
@@ -618,6 +794,7 @@ public class LevelTransitionManager : MonoBehaviour
         currentLevelIndex = IndexOfPath(nextScene.path);
         nextScene = default;
         activePortal = null;
+        activeDestPath = null;
         Debug.Log($"[LevelTransitionManager] T2: 传送穿过，当前关卡 = {currentScene.name}", this);
 
         // 解析新关出口门并预锁（下一段过渡的门口）
@@ -646,12 +823,14 @@ public class LevelTransitionManager : MonoBehaviour
         unloading = false;
         Debug.Log("[LevelTransitionManager] 上一关已卸载并清理资源", this);
 
-        // 卸载期间刷了新关的门 → 现在续传过渡
+        // 卸载期间刷了新关的门 → 现在续传过渡(目的地 = 刷卡瞬间已裁决的结果)
         if (pendingPortal != null)
         {
             var portal = pendingPortal;
             pendingPortal = null;
-            AdvanceTransition(portal);
+            var dest = pendingDestination;
+            pendingDestination = default;
+            AdvanceTransition(portal, dest);
         }
         else
         {
@@ -663,14 +842,25 @@ public class LevelTransitionManager : MonoBehaviour
 
     /// <summary>
     /// 直达换场景（无门演出;线性直达 / 选关 / 调试 / 彩蛋传送用）：
-    /// 只做"装卸关卡场景 + 切活动场景 + 新关出口预锁",不碰钥匙与传送门,
-    /// 玩家场景不动、玩家不做位移 —— 落点是调用方职责(需要时自行摆位或用
-    /// BeeFlightController.ApplyPortalTransform)。
+    /// 只做"装卸关卡场景 + 切活动场景 + 新关出口预锁",不碰钥匙与传送门。
+    /// 玩家场景不动;玩家位移由 landing 决定:本签名 = 玩家原地不动(旧语义,原样保留),
+    /// 需要落点请用带 PlayerLanding 的重载(落到目标关默认出生点)。
     /// 守卫:仅稳定点 + 无进行中的门过渡 + 目标必须在关卡注册表内(玩家 / 背景
     /// Room_00 等非关卡场景由列表天然排除),且 ≠ 当前关。
     /// 完成后 SetSettled(true) → Settled 事件 → 流程"到达自动存档"自动生效。
     /// </summary>
-    public bool RequestDirectSwitch(string scenePath)
+    public bool RequestDirectSwitch(string scenePath) =>
+        DirectSwitchRequested(scenePath, PlayerLanding.KeepCurrent);
+
+    /// <summary>
+    /// 直达换场景 + 落点（到达后按 landing 决定玩家去留;与单参版本同守卫同时序）。
+    /// landing = LevelSpawnPoint:加载完成后把玩家放到目标关默认出生点(PlayerSpawnPoint;
+    /// 目标关没摆标记 → 保持原位并留日志)。落点先于 SetSettled —— 自动存档采到出生点位姿。
+    /// </summary>
+    public bool RequestDirectSwitch(string scenePath, PlayerLanding landing) =>
+        DirectSwitchRequested(scenePath, landing);
+
+    private bool DirectSwitchRequested(string scenePath, PlayerLanding landing)
     {
         if (!settled)
         {
@@ -708,17 +898,17 @@ public class LevelTransitionManager : MonoBehaviour
             return false;
         }
 
-        StartCoroutine(DirectSwitchCoroutine(scenePath));
+        StartCoroutine(DirectSwitchCoroutine(scenePath, landing));
         return true;
     }
 
-    private IEnumerator DirectSwitchCoroutine(string scenePath)
+    private IEnumerator DirectSwitchCoroutine(string scenePath, PlayerLanding landing)
     {
         Scene prevSceneLocal = currentScene;
         SetSettled(false);
-        Debug.Log($"[LevelTransitionManager] 直达换场景：{currentScene.name} → {scenePath}（无门演出）", this);
+        Debug.Log($"[LevelTransitionManager] 直达换场景：{currentScene.name} → {scenePath}（无门演出，落点 = {landing}）", this);
 
-        // 加载目标关(激活 / 当前关身份 / LevelReady 均在此完成;失败时 currentScene 保持原关)
+        // 加载目标关(激活 / 当前关身份均在此完成;失败时 currentScene 保持原关)
         yield return LoadLevelByPathCoroutine(scenePath);
         if (!currentScene.IsValid() || !currentScene.isLoaded || currentScene.path != scenePath)
         {
@@ -727,7 +917,8 @@ public class LevelTransitionManager : MonoBehaviour
             yield break;
         }
 
-        // 卸载原关(原关只在直达成功后卸载 —— 失败时原关仍在,可继续游玩)
+        // 卸载原关(原关只在直达成功后卸载 —— 失败时原关仍在,可继续游玩;
+        // 卸载协程天然跨帧,新场景组件 Start 已跑完,落点无需再等帧)
         if (prevSceneLocal.IsValid() && prevSceneLocal.isLoaded)
         {
             var op = SceneManager.UnloadSceneAsync(prevSceneLocal);
@@ -736,6 +927,7 @@ public class LevelTransitionManager : MonoBehaviour
         Resources.UnloadUnusedAssets();
 
         ResolveExitsForCurrentLevel();   // 新关出口预锁(下一段过渡的门口)
+        PlacePlayerAtSpawn(currentScene, landing);   // 落点(目标关出生点 / 保持原位)—— 先于 Settled
         Debug.Log($"[LevelTransitionManager] 直达完成：{currentScene.name} 出口已就绪", this);
         SetSettled(true);   // → Settled(流程的"到达自动存档")
     }
@@ -750,7 +942,7 @@ public class LevelTransitionManager : MonoBehaviour
         currentLevelIndex = index;
     }
 
-    /// <summary>按路径加载关卡（开局 / 读档共用）：激活、写当前场景、播 LevelReady。</summary>
+    /// <summary>按路径加载关卡（开局 / 读档共用）：激活、写当前场景。</summary>
     private IEnumerator LoadLevelByPathCoroutine(string path)
     {
         var op = SceneManager.LoadSceneAsync(path, LoadSceneMode.Additive);
@@ -765,7 +957,6 @@ public class LevelTransitionManager : MonoBehaviour
         loadState = LoadState.Done;
         transitionTriggered = false;
         SceneManager.SetActiveScene(currentScene);
-        GameEvents.LevelReady?.Invoke(currentScene);   // 加载完成:开当前关卡环境音(注册式同步)
     }
 
     /// <summary>场景路径在线性列表中的序数（不在列表 = -1，如分支目的地 / 旧存档指向已移除的关）。</summary>

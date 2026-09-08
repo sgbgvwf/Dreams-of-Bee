@@ -106,6 +106,13 @@ public sealed class LampState
     public bool on;
 }
 
+/// <summary>SwingSwitch 状态(机关单向开启:true = 已开启并永久保持,开过即退役)。</summary>
+[Serializable]
+public sealed class SwingState
+{
+    public bool swung;
+}
+
 /// <summary>可拾取物(Interactable, Type==Pickup)状态。</summary>
 [Serializable]
 public sealed class PickupState

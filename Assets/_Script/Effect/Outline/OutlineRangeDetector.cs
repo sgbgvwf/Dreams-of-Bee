@@ -4,7 +4,8 @@ using UnityEngine;
 /// <summary>
 /// Outline 层管理（描边触发由交互射线负责，本脚本不自己发射线）。
 ///
-/// 交互射线（BeeInteractionController 每帧瞄准检测）命中带 Interactable 的物体时，
+/// 交互射线（BeeInteractionController 每帧瞄准检测）命中可交互物 —— Interactable（拾取物）/
+/// 实现 IInteractable（按式/单击型交互物，如台灯开关、摆动机关、冲量件 PullToPlayer）—— 时，
 /// 调用 AddOutline 把其渲染器切至 Outline 层 —— 遮罩相机按该层渲染出描边；
 /// 准星移开 / 超出射程时调用 RemoveOutline 恢复原层。
 ///

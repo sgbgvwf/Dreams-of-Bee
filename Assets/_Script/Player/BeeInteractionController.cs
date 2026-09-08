@@ -15,8 +15,10 @@ using UnityEngine.InputSystem;
 ///     player, carried rigidly at a fixed body-local offset); pressing again drops it (gravity and colliders
 ///     restored, motion cleared). IInteractable → its OnInteract() is called; the concrete
 ///     behavior (flipping a lamp switch, opening a door...) is entirely up to the implementer.
-///   - 拿东西时不能攀爬（任何表面）：持物状态下不会进入 Crawling 状态，物品不会被强制掉落；
-///     爬行中拿起物品，蜜蜂会因无法攀爬而自己掉下去（物品仍拿在手里）。
+///   - 瞄准射线只认"启用中"的交互组件：链上的 IInteractable / Interactable 若已被禁用
+///     （一次性机关开过后自禁退役，见 SwingSwitch）= 不可交互 —— 不描边、不分发。
+///   - 拿东西时可以趴着但爬不动：持物接触表面同样进入 Crawling（能停靠、能恢复体力），
+///     只是持物爬行移动速度为 0——爬行中拿起物品不会掉下去,只是原地趴在表面上。
 ///   - Pickups permanently ignore collision with the player's collider (set up by
 ///     Interactable.Awake via Interactable.PlayerCollider, replacing the old Pickable-layer rule)
 /// </summary>
@@ -110,7 +112,9 @@ public class BeeInteractionController : MonoBehaviour
     /// <summary>
     /// 每帧瞄准检测（描边触发统一走这条射线）：
     /// 第一个命中（排除玩家）的物体带 Interactable（拾取物）或实现 IInteractable 的功能脚本
-    /// → 推入 Outline 层描边；移开 / 超出射程 / 命中不可交互物 → 恢复上一目标的原层。
+    /// （台灯开关、摆动机关、冲量件 PullToPlayer 等，单击型一律走标准分发）→ 推入 Outline 层
+    /// 描边；链上交互组件已被禁用 = 退役，不算可交互；移开 / 超出射程 / 命中不可交互物 →
+    /// 恢复上一目标的原层。
     /// </summary>
     private void UpdateAimOutline()
     {
@@ -118,11 +122,13 @@ public class BeeInteractionController : MonoBehaviour
         int mask = ~((1 << gameObject.layer) | (1 << LayerMask.NameToLayer("Portal")));
         bool hitTarget = Physics.Raycast(cameraTransform.position, cameraTransform.forward,
             out RaycastHit hit, interactRange, mask);
-        // 可交互判定（拾取优先）：Interactable → 拾取物；否则 IInteractable → 自定义交互物
-        var interactable = hitTarget ? hit.collider.GetComponentInParent<Interactable>() : null;
-        Component aimTarget = interactable != null
-            ? interactable
-            : hitTarget ? hit.collider.GetComponentInParent<IInteractable>() as Component : null;
+        // 可交互判定（与 TryInteract 分发同序，拾取优先）：
+        //  Interactable → 拾取物；否则 IInteractable → 按式/单击型交互物（OnInteract 边缘分发）。
+        //  沿父链找到的组件若已禁用 = 用后退役（一次性机关自禁）→ 不算可交互（见 FindEnabledInParents）
+        var pickable = hitTarget ? FindEnabledInParents<Interactable>(hit.collider.transform) : null;
+        Component aimTarget = pickable != null
+            ? pickable
+            : hitTarget ? FindEnabledInParents<IInteractable>(hit.collider.transform) as Component : null;
 
         if (aimTarget != null)
         {
@@ -145,6 +151,24 @@ public class BeeInteractionController : MonoBehaviour
             currentAimRoot = null;
             GameEvents.AimLost?.Invoke();   // 描边丢失音效
         }
+    }
+
+    /// <summary>
+    /// 沿父链找"启用中"的交互组件（T = Interactable 或 IInteractable 的实现者）。
+    /// 链上最近的交互组件若已禁用 = 已退役（一次性机关开过后自禁，见 SwingSwitch）→
+    /// 视为不存在且不继续上找 —— 整链就此不可交互，简单确定。
+    /// </summary>
+    private static T FindEnabledInParents<T>(Transform from) where T : class
+    {
+        for (Transform t = from; t != null; t = t.parent)
+        {
+            T c = t.GetComponent<T>();
+            if (c == null) continue;
+            var behaviour = c as Behaviour;
+            if (behaviour != null && !behaviour.enabled) return null;   // 退役：链上最近一个交互组件是禁用的
+            return c;
+        }
+        return null;
     }
 
     private void LateUpdate()
@@ -188,6 +212,7 @@ public class BeeInteractionController : MonoBehaviour
     ///  - 准星未瞄准可交互物 → 直接返回
     ///  - 命中物体有 Interactable → 拾起（拾取物）
     ///  - 否则有 IInteractable → 调用其 OnInteract()，具体行为由功能脚本自行处理
+    ///    （aimTarget 已被禁用规则滤过 —— 退役组件进不到这里）
     /// </summary>
     private void TryInteract()
     {

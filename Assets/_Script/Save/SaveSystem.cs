@@ -23,6 +23,9 @@ using UnityEngine.SceneManagement;
 ///     再镜像玩家（控制器 / 刚体直读，持物记活引用路径）；只在稳定点（LevelTransitionManager.IsSettled）允许；
 ///   - 恢复：按路径找组件 → 类型校验 → 组件自恢复（场景刚实例化、任何游玩帧之前），随后玩家快照 + 持物重挂；
 ///     条目组件缺失 / 类型不符 / 路径落空 → 警告并跳过（旧档对新场景结构天然容错）；
+///   - 周期落盘（游玩中即写、不依赖存档点）：每 PeriodicPersistInterval 秒一拍 —— 稳定点时写整局
+///     快照（时长含在快照里），稳定点外退回纯时长轻量写 —— 直接退出（编辑器 Stop / 关进程 / 崩溃）
+///     时长与进度同粒度、最多滞后一个间隔；显式点（到达站稳 / 回菜单 / 手动保存）全量存档不变；
 ///   - 原子写：先写 .tmp 再 File.Replace（不支持时退化删除+移动），崩溃不会留下半写档；
 ///     读损坏 → 原档改名 .corrupt 视为空档，不再覆盖好档。
 ///
@@ -122,6 +125,12 @@ public static class SaveSystem
     private static long sessionCreatedTicks;         // 本会话"档创建时刻"(新局 = 现在;读档 = 档内原有值)
     private static float sessionPlaySeconds;         // 本会话开始前该档已累计的游玩秒数(读档带出;新局 = 0)
     private static float sessionClockSeconds;        // 本会话内累计的游玩秒数(游玩中每帧 Tick;暂停不计)
+    private static float lastPeriodicPersistSeconds;   // 上次周期落盘时的 sessionClockSeconds(节流基准;见 TickSessionClock)
+
+    /// <summary>周期落盘的节流间隔(秒):游玩中每累计满这么多就落盘一拍(见 PeriodicPersist)。
+    /// 时长与进度共用同一条节奏 —— 稳定点时整局快照(时长含在快照里),稳定点外退回纯时长轻量写,
+    /// 直接退出(编辑器 Stop / 关进程 / 崩溃)两者都最多滞后一个间隔,不依赖任何存档点。</summary>
+    private const float PeriodicPersistInterval = 1f;
 
     public static bool HasActiveRun => activeSlotIndex >= 0;
     public static int ActiveSlotIndex => activeSlotIndex;
@@ -177,6 +186,7 @@ public static class SaveSystem
         sessionCreatedTicks = DateTime.UtcNow.Ticks;   // 新档:创建时刻 = 现在;时长从零计
         sessionPlaySeconds = 0f;
         sessionClockSeconds = 0f;
+        lastPeriodicPersistSeconds = 0f;
         Meta.lastSlotIndex = slotIndex;
         SaveMeta();
         return true;
@@ -195,26 +205,70 @@ public static class SaveSystem
         sessionCreatedTicks = slot.createdTicks != 0 ? slot.createdTicks : slot.savedAtTicks;
         sessionPlaySeconds = Mathf.Max(0f, slot.playSeconds);
         sessionClockSeconds = 0f;
+        lastPeriodicPersistSeconds = 0f;
         Meta.lastSlotIndex = slotIndex;
         SaveMeta();
         return true;
     }
 
-    /// <summary>游玩时长累计(游玩中每帧调用;暂停时 deltaTime = 0 自然不计)。</summary>
+    /// <summary>游玩计时(游玩中每帧调用;暂停时 deltaTime = 0 自然不计)。
+    /// 每累计满 PeriodicPersistInterval 秒触发一次周期落盘(见 PeriodicPersist)。</summary>
     public static void TickSessionClock(float deltaTime)
     {
         if (!HasActiveRun || deltaTime <= 0f) return;
         sessionClockSeconds += deltaTime;
+        if (sessionClockSeconds - lastPeriodicPersistSeconds >= PeriodicPersistInterval)
+            PeriodicPersist();
+    }
+
+    /// <summary>
+    /// 周期落盘(时长与进度共用同一条节奏):游玩中每满 PeriodicPersistInterval 秒一拍,收局前
+    /// (EndRunSession)再补一次 —— 稳定点时写整局快照(时长已含在快照的 playSeconds 里,一并落盘);
+    /// 采集条件不满足(过渡 / 玩家未就绪 / 无关卡)时退回纯时长轻量写(见 PersistClockToSlot)。
+    /// 每一拍必有写,不空过 —— 直接退出(编辑器 Stop / 关进程 / 崩溃)时长与进度都最多滞后一个间隔。
+    /// </summary>
+    private static void PeriodicPersist()
+    {
+        lastPeriodicPersistSeconds = sessionClockSeconds;
+        if (!HasActiveRun) return;
+        var data = CaptureCurrentSession();   // 内部静默守卫:无关卡 / 非稳定点 / 玩家未就绪 → null
+        if (data != null)
+        {
+            WriteSlot(activeSlotIndex, data);
+            return;
+        }
+        PersistClockToSlot();
+    }
+
+    /// <summary>
+    /// 纯时长轻量写(PeriodicPersist 稳定点外的降级路径):不采集场景快照,只把"累计时长 + 时刻"
+    /// 刷进活动档已有文件 —— 这一拍没有可采现场,时长也不因此丢;场景状态保持最近一次完整
+    /// 快照不变(恢复稳定点后由 Settled 事件存档 / 下一拍整快照接上)。
+    /// 活动档还没有文件(首张完整快照前)时跳过,不给空档凭空建档;损坏档已被 ReadSlot 隔离
+    /// → 返回 null 同样跳过。
+    /// </summary>
+    private static void PersistClockToSlot()
+    {
+        if (!HasActiveRun) return;
+        string path = SlotPath(activeSlotIndex);
+        if (!File.Exists(path)) return;
+        var slot = ReadSlot(activeSlotIndex);
+        if (slot == null) return;
+        slot.playSeconds = sessionPlaySeconds + sessionClockSeconds;
+        slot.savedAtTicks = DateTime.UtcNow.Ticks;
+        WriteFileAtomic(path, JsonUtility.ToJson(slot));
     }
 
     /// <summary>收局（返回主菜单 / 结局）：结束活动档会话。</summary>
     public static void EndRunSession()
     {
+        PeriodicPersist();   // 收局前把会话最后一段落盘(稳定点整快照 / 已卸载则纯时长;重复写无害,无文件则跳过)
         activeSlotIndex = -1;
         runKvCache.Clear();
         sessionCreatedTicks = 0;
         sessionPlaySeconds = 0f;
         sessionClockSeconds = 0f;
+        lastPeriodicPersistSeconds = 0f;
     }
 
     /// <summary>把活动档标记为"已通关"（结局确认时）：清空局内容,只留通关标记供菜单显示 / 新周目。</summary>

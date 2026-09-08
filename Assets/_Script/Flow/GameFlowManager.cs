@@ -184,13 +184,21 @@ public class GameFlowManager : MonoBehaviour
         Cursor.visible = true;
     }
 
+    /// <summary>开发者直玩时主菜单操作会被状态门拒绝 —— 日志补一句指引,免得误以为功能坏了。</summary>
+    private static string DevDirectHint()
+    {
+        return State == FlowState.DevDirectPlay
+            ? "（开发者直玩：请从 Persistance 场景启动以使用主菜单功能）"
+            : "";
+    }
+
     // ==================== 请求入口(静态 API → 实例,含状态门) ====================
 
     private void RequestNewGame(int slotIndex)
     {
         if (State != FlowState.MainMenu)
         {
-            Debug.LogWarning("[GameFlow] 新游戏请求被拒：当前不在主菜单");
+            Debug.LogWarning($"[GameFlow] 新游戏请求被拒：当前不在主菜单（State = {State}）{DevDirectHint()}");
             return;
         }
         StartCoroutine(NewGameRoutine(slotIndex));
@@ -200,7 +208,7 @@ public class GameFlowManager : MonoBehaviour
     {
         if (State != FlowState.MainMenu)
         {
-            Debug.LogWarning("[GameFlow] 继续游戏请求被拒：当前不在主菜单");
+            Debug.LogWarning($"[GameFlow] 继续游戏请求被拒：当前不在主菜单（State = {State}）{DevDirectHint()}");
             return;
         }
         // 标题「继续游戏」= 续「上一次游戏」:只对仍可玩的档生效(未通关 / 非空)。
@@ -219,7 +227,7 @@ public class GameFlowManager : MonoBehaviour
     {
         if (State != FlowState.MainMenu)
         {
-            Debug.LogWarning("[GameFlow] 读档请求被拒：当前不在主菜单");
+            Debug.LogWarning($"[GameFlow] 读档请求被拒：当前不在主菜单（State = {State}）{DevDirectHint()}");
             return;
         }
         if (slotIndex < 0 || !SaveSystem.SlotExists(slotIndex))
@@ -271,7 +279,7 @@ public class GameFlowManager : MonoBehaviour
 
     private IEnumerator NewGameRoutine(int slotIndex)
     {
-        yield return FadeOverlay.FadeRoutine(1f, 0.3f);
+        yield return FadeOverlay.FadeInAndHold(0.3f);   // 盖幕 + 全黑停留(时长见 FadeOverlay.holdBlackSeconds)
 
         // 覆盖确认已由菜单 UI 完成:直接清槽,开新局(周目 = 已通关数 + 1)
         SaveSystem.ClearSlot(slotIndex);
@@ -295,7 +303,7 @@ public class GameFlowManager : MonoBehaviour
         }
         var slot = SaveSystem.ReadSlot(slotIndex);
 
-        yield return FadeOverlay.FadeRoutine(1f, 0.3f);
+        yield return FadeOverlay.FadeInAndHold(0.3f);   // 盖幕 + 全黑停留(时长见 FadeOverlay.holdBlackSeconds)
 
         if (slot == null || slot.runFinished || string.IsNullOrEmpty(slot.levelPath))
         {
@@ -358,7 +366,7 @@ public class GameFlowManager : MonoBehaviour
     private IEnumerator QuitToMenuRoutine()
     {
         PauseMenu.ForceExitPause();   // 若从暂停菜单发起:先解除暂停(timeScale=1 / 光标释放)
-        yield return FadeOverlay.FadeRoutine(1f, 0.35f);
+        yield return FadeOverlay.FadeInAndHold(0.35f);   // 盖幕 + 全黑停留(时长见 FadeOverlay.holdBlackSeconds)
 
         // 返回主菜单前自动存档(防崩溃丢进度)。若正处于门过渡 / 加载窗口(非稳定点),先等过渡
         // 落定再存 —— 过渡中现场不可采集,硬存必失败且随后 EndRunSession 会静默丢进度;
@@ -393,7 +401,7 @@ public class GameFlowManager : MonoBehaviour
     private IEnumerator EndingRoutine(EndingCatalog.EndingDefinition def)
     {
         PauseMenu.ForceExitPause();   // 防御:若触发于暂停中先解除
-        yield return FadeOverlay.FadeRoutine(1f, 0.4f);
+        yield return FadeOverlay.FadeInAndHold(0.4f);   // 盖幕 + 全黑停留(时长见 FadeOverlay.holdBlackSeconds)
 
         currentEndingId = def.id;
         endingRunPlaythrough = SaveSystem.HasActiveRun ? SaveSystem.ActivePlaythrough : SaveSystem.Meta.completedRuns + 1;
@@ -437,7 +445,7 @@ public class GameFlowManager : MonoBehaviour
     /// <summary>结局确认后回主菜单:结局用了非默认背景时换回 Room_00。</summary>
     private IEnumerator ReturnToMenuRoutine(string endedId)
     {
-        yield return FadeOverlay.FadeRoutine(1f, 0.3f);
+        yield return FadeOverlay.FadeInAndHold(0.3f);   // 盖幕 + 全黑停留(时长见 FadeOverlay.holdBlackSeconds)
         string defBackdrop = ResolveDefaultBackdropPath();
         if (currentBackdropPath != defBackdrop)
             yield return ShowBackdropRoutine(defBackdrop);

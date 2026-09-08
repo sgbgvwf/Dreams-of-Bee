@@ -13,7 +13,7 @@ using UnityEngine.UI;
 ///     全部逻辑(飞行体力结算、灯光闪烁、门、关卡过渡…)都依赖 scaled time,
 ///     因此 timeScale = 0 时画面与机制自然全部冻结,无需逐个脚本通知。
 ///   - 而 MonoBehaviour.Update / EventSystem / uGUI 输入照常运行 → 菜单可以点击、可以再按 Esc 恢复。
-///   - 播放中的音效(振翅 / 风声循环等)不随 timeScale 停,统一用 AudioListener.pause 静音。
+///   - 播放中的音效(风声循环等)不随 timeScale 停,统一用 AudioListener.pause 静音。
 ///   - 打开菜单时让出光标控制:BeeFlightController.HandleCursor 每帧会把光标锁回,
 ///     它读到 PauseMenu.IsPaused 后会让出(见该脚本 Update 首行);光标与 timeScale 由本类统一管理。
 ///
@@ -89,9 +89,11 @@ public class PauseMenu : MonoBehaviour
         GameFlowManager.QuitToMenu();
     }
 
-    /// <summary>退出游戏。</summary>
+    /// <summary>退出游戏(显式出口:退出前先把当前进度落盘 —— 稳定点内必成功;过渡中失败也无害,
+    /// 游玩中的周期快照落盘已把硬退出损失限在一个 SnapshotPersistInterval 内)。</summary>
     public void QuitGame()
     {
+        SaveSystem.SaveActiveSlot();   // 玩家明确点退出 = 想带走当前进度;非稳定点由 SaveActiveSlot 内部拒绝并留日志
 #if UNITY_EDITOR
         UnityEditor.EditorApplication.isPlaying = false;   // 编辑器里 Application.Quit 无效,直接退出播放
 #else
@@ -116,7 +118,7 @@ public class PauseMenu : MonoBehaviour
 
         IsPaused = true;
         Time.timeScale = 0f;          // 冻结一切 scaled-time 逻辑 + 物理(机制见类注释)
-        AudioListener.pause = true;   // 振翅 / 风声等正在播放的循环音一并停
+        AudioListener.pause = true;   // 风声等正在播放的循环音一并停
         Cursor.lockState = CursorLockMode.None;
         Cursor.visible = true;
         SetMenuVisible(true);

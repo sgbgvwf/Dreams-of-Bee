@@ -21,10 +21,7 @@ public class AudioManager : MonoBehaviour
     private readonly List<string> missingFiles = new List<string>();     // 素材缺失清单(只警告一次)
 
     // 常驻循环句柄
-    private LoopHandle wingLoop;         // 振翅
     private LoopHandle fallLoop;         // 落风
-    private LoopHandle roomAmbient;      // 当前关卡环境音
-    private Scene ambientScene;          // 当前环境音归属的关卡场景
 
     // ==================== 单例 ====================
 
@@ -55,9 +52,8 @@ public class AudioManager : MonoBehaviour
         LoadAllClips();
         RegisterEvents();
 
-        // 环境音切换与灯嗡鸣的驱动(与关卡场景生命周期绑定)
+        // 灯嗡鸣的驱动(与关卡场景生命周期绑定)
         SceneManager.sceneLoaded += OnSceneLoaded;
-        SceneManager.sceneUnloaded += OnSceneUnloaded;
     }
 
     // ==================== 注册表(核心:玩法方法 → 音效同步响应) ====================
@@ -84,27 +80,18 @@ public class AudioManager : MonoBehaviour
         GameEvents.TransitionStart += () => PlaySfx(SfxId.TransitionWhoosh, 0.6f);
         GameEvents.LevelConfirm += () => PlaySfx(SfxId.LevelConfirm, 0.5f);
         GameEvents.UnloadFade += () => PlaySfx(SfxId.UnloadFade, 0.4f);
-        GameEvents.LevelReady += OnLevelReady;
         GameEvents.FlickerCrackle += pos => PlaySfxAt(SfxId.FlickerCrackle, pos, 0.5f);
 
         // 注:管理器 DontDestroyOnLoad 常驻、单实例守卫,静态事件处理器不悬挂不重复;
         // 退出游戏 / 编辑器域重载时静态事件随域销毁,无需逐个反注册。
     }
 
-    /// <summary>飞行状态切换:推导演奏/落地/坠地,并管理振翅与落风循环。</summary>
+    /// <summary>飞行状态切换:推导演奏/落地/坠地,并管理落风循环。</summary>
     private void OnBeeStateChanged(BeeFlightController.BeeState prev, BeeFlightController.BeeState next)
     {
-        // 起飞:爬行 → 飞行(同时启振翅循环)
+        // 起飞:爬行 → 飞行
         if (prev == BeeFlightController.BeeState.Crawling && next == BeeFlightController.BeeState.Flying)
-        {
             PlaySfx(SfxId.TakeOff, 0.6f);
-            StopLoop(wingLoop);
-            wingLoop = StartLoop(SfxId.WingBuzz, 0.35f);
-        }
-
-        // 离开飞行:停振翅(落地或坠落都会经过这里)
-        if (prev == BeeFlightController.BeeState.Flying)
-            StopLoop(wingLoop);
 
         // 落地:坠落 → 爬行
         if (prev == BeeFlightController.BeeState.Falling && next == BeeFlightController.BeeState.Crawling)
@@ -148,15 +135,6 @@ public class AudioManager : MonoBehaviour
         }
     }
 
-    /// <summary>关卡就绪(启动完成 / 出口门已开):停旧环境音、启新关卡环境音。</summary>
-    private void OnLevelReady(Scene scene)
-    {
-        if (scene == ambientScene && roomAmbient != null) return;   // 同场景重复就绪不重启
-        StopLoop(roomAmbient);
-        ambientScene = scene;
-        roomAmbient = StartLoop(SfxId.RoomAmbient, 0.5f);
-    }
-
     private void OnSceneLoaded(Scene scene, LoadSceneMode mode)
     {
         if (mode != LoadSceneMode.Additive) return;   // 只处理关卡场景
@@ -168,35 +146,39 @@ public class AudioManager : MonoBehaviour
         }
     }
 
-    private void OnSceneUnloaded(Scene scene)
-    {
-        // 卸载的是当前环境音的归属关卡 → 停环境音(避免旧关音效残留到新关)
-        if (scene == ambientScene)
-        {
-            StopLoop(roomAmbient);
-            roomAmbient = null;
-            ambientScene = default;
-        }
-    }
-
     // ==================== 播放 API ====================
 
-    /// <summary>2D 一次性音效(玩家身上的声音用这个,不随距离衰减)。</summary>
+    /// <summary>同款一次性音效的最小重播间隔:冷却内再次到达的直接跳过(只吞同帧 / 瞬间连发的重复)。</summary>
+    private const float OneShotCooldown = 0.05f;
+
+    private readonly Dictionary<SfxId, float> lastOneShotAt = new Dictionary<SfxId, float>();
+
+    /// <summary>播放冷却门:同款距上次播放不足 OneShotCooldown → false(本次跳过);通过则记录本次时刻。</summary>
+    private bool AcquireCooldown(SfxId id)
+    {
+        float now = Time.time;
+        if (lastOneShotAt.TryGetValue(id, out float last) && now - last < OneShotCooldown)
+            return false;
+        lastOneShotAt[id] = now;
+        return true;
+    }
+
+    /// <summary>2D 一次性音效(玩家身上的声音用这个,不随距离衰减)。同款受播放冷却限制。</summary>
     public void PlaySfx(SfxId id, float volume = 1f, float pitch = 1f)
     {
         if (master == null) return;
         var clip = GetClip(id);
-        if (clip == null) return;
+        if (clip == null || !AcquireCooldown(id)) return;
         master.pitch = pitch;
         master.PlayOneShot(clip, volume);
         master.pitch = 1f;
     }
 
-    /// <summary>3D 一次性音效:在指定世界位置播放,带距离衰减。</summary>
+    /// <summary>3D 一次性音效:在指定世界位置播放,带距离衰减。同款受播放冷却限制。</summary>
     public void PlaySfxAt(SfxId id, Vector3 position, float volume = 1f, float pitch = 1f)
     {
         var clip = GetClip(id);
-        if (clip == null) return;
+        if (clip == null || !AcquireCooldown(id)) return;
         var go = new GameObject("SFX_" + id);
         go.transform.position = position;
         var src = go.AddComponent<AudioSource>();
@@ -298,7 +280,6 @@ public class AudioManager : MonoBehaviour
         new SfxDef { FileName = "Landing",        Wave = Wave.Sine,       F0 = 120f, F1 = 90f,  Duration = 0.15f, Volume = 0.6f  },  // 落地 thud
         new SfxDef { FileName = "FallStart",      Wave = Wave.BrownNoise, F0 = 500f, F1 = 120f, Duration = 0.35f, Volume = 0.5f  },  // 开始下落
         new SfxDef { FileName = "CrawlStep",      Wave = Wave.Sine,       F0 = 900f,           Duration = 0.06f, Volume = 0.4f  },  // 爬行脚步 tick
-        new SfxDef { FileName = "WingBuzz",       Wave = Wave.Sine,       F0 = 150f, NoiseMix = 0.1f, Duration = 1.0f, Volume = 0.4f,  Loop = true },  // 振翅
         new SfxDef { FileName = "FallWind",       Wave = Wave.BrownNoise, Duration = 1.5f, Volume = 0.5f, Loop = true },                       // 落风
         // 交互
         new SfxDef { FileName = "PickUp",         Wave = Wave.Sine,       F0 = 500f, F1 = 900f, Duration = 0.12f, Volume = 0.5f  },  // 拾取 pop
@@ -321,7 +302,6 @@ public class AudioManager : MonoBehaviour
         new SfxDef { FileName = "TransitionWhoosh", Wave = Wave.Noise,    Duration = 1.2f, Volume = 0.5f },                            // 过渡开始 whoosh
         new SfxDef { FileName = "LevelConfirm",   Wave = Wave.Sine,       F0 = 660f, F1 = 880f, Duration = 0.30f, Volume = 0.5f  },  // 关卡确认 chime
         new SfxDef { FileName = "UnloadFade",     Wave = Wave.BrownNoise, Duration = 0.80f, Volume = 0.4f },                            // 卸载淡出
-        new SfxDef { FileName = "RoomAmbient",    Wave = Wave.Sine,       F0 = 55f, NoiseMix = 0.4f, Duration = 2.0f, Volume = 0.25f, Loop = true },  // 房间环境音
         // 灯
         new SfxDef { FileName = "FlickerBuzz",    Wave = Wave.Sine,       F0 = 120f, NoiseMix = 0.3f, Duration = 0.5f, Volume = 0.3f, Loop = true },  // 灯嗡鸣
         new SfxDef { FileName = "FlickerCrackle", Wave = Wave.Noise,      Duration = 0.06f, Volume = 0.5f },                            // 断电噼啪

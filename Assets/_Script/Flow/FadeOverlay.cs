@@ -10,7 +10,7 @@ using UnityEngine.UI;
 /// 淡幕属于流程层,即使暂停(timeScale = 0)或加载中也必须能走完,不能让流程卡在半黑屏。
 ///
 /// 用法(流程协程内):
-///   yield return FadeOverlay.FadeRoutine(1f, 0.35f);   // 淡到全黑(alpha 目标,黑幕在切换期间遮断画面)
+///   yield return FadeOverlay.FadeInAndHold(0.35f);     // 盖幕到全黑并停留 holdBlackSeconds(切换期间遮断画面)
 ///   ...切换场景 / UI...
 ///   yield return FadeOverlay.FadeRoutine(0f, 0.4f);    // 揭开
 /// 黑幕 Image raycastTarget = true:切换期间的点击不会漏到下层。
@@ -22,6 +22,9 @@ public class FadeOverlay : MonoBehaviour
 
     [SerializeField, Tooltip("场景里的全屏黑幕 Image(sortingOrder 100 的 Fade Canvas 下)。")]
     private Image overlay;
+
+    [SerializeField, Tooltip("盖幕后保持全黑的时长(秒):全项目黑屏节奏的唯一旋钮 —— 加载很快时黑幕一闪而过,\n这段停留保证每次切换都有一段可见的黑屏断点(0 = 盖完立即继续)。")]
+    private float holdBlackSeconds = 0.5f;
 
     private void Awake()
     {
@@ -69,6 +72,19 @@ public class FadeOverlay : MonoBehaviour
             yield return null;
         }
         inst.SetAlpha(targetAlpha);
+    }
+
+    /// <summary>
+    /// 盖幕并停留片刻 —— 流程切换的推荐盖幕入口:淡到全黑,再按 holdBlackSeconds 保持全黑后放行。
+    /// 场景加载很快时黑幕几乎瞬间完成,没有这段停留就"一闪而过"看不出切换;
+    /// 黑屏时长想全局加减只调场景上本组件的 holdBlackSeconds(0 = 盖完立即继续,旧节奏)。
+    /// </summary>
+    public static IEnumerator FadeInAndHold(float fadeDuration)
+    {
+        yield return FadeRoutine(1f, fadeDuration);
+        var inst = Instance;
+        if (inst == null || inst.holdBlackSeconds <= 0f) yield break;
+        yield return new WaitForSecondsRealtime(inst.holdBlackSeconds);
     }
 
     /// <summary>淡入(画面被淡幕盖住) — 语义糖,等价 FadeRoutine(1, duration)。</summary>

@@ -10,12 +10,11 @@
 
 标注"循环"的音效请做成无缝循环(首尾相接),长度建议 >= 1 秒。
 
-必需文件(26 个):
+必需文件(24 个):
 TakeOff.wav        起飞
 Landing.wav        落地
 FallStart.wav      开始下落
 CrawlStep.wav      爬行脚步
-WingBuzz.wav       翅膀振翅(循环)
 FallWind.wav       下落风声(循环)
 PickUp.wav         拾取
 Drop.wav           放下
@@ -34,6 +33,5 @@ CardDeny.wav       刷卡被拒
 TransitionWhoosh.wav 过渡开始
 LevelConfirm.wav   关卡切换确认
 UnloadFade.wav     关卡卸载淡出
-RoomAmbient.wav    房间环境音(循环)
 FlickerBuzz.wav    灯闪烁嗡鸣(循环)
 FlickerCrackle.wav 灯断电噼啪

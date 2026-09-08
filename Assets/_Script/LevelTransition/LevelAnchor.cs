@@ -9,25 +9,36 @@ using UnityEditor;
 /// 关卡锚点标记：标记本关卡"入口门" / "出口门"的位置与朝向，是传送门（PortalDoor）的位姿基准。
 /// - 出口锚点（Exit）：标记本关出口门洞的位置；同时可引用出口门上的 SlidingDoor
 ///   （Room_01 的门是 FBX 实例，无法重挂父子关系，所以用显式引用；无引用时管理器
-///   自动在锚点子物体中查找 SlidingDoor）。出口锚点上可挂 PortalDoor（传送门控制器）。
+///   自动在锚点子物体中查找 SlidingDoor）。出口锚点上可挂 PortalDoor（穿门组件）。
 /// - 入口锚点（Entry）：标记下一关门洞的位置；传送门把玩家相对出口锚点的位姿映射到
-///   入口锚点，生成门面渲染相机姿态与传送落点。
+///   入口锚点，生成穿门落点与门面渲染相机的位姿参照。
+///   注意：入口锚点只做位姿参照 —— 不挂 PortalDoor、不摆门面平面 / 相机。
+///   门面显示(纹理 + 相机)只属于出口锚点一侧(玩家看过去的那扇门)。
 ///
-/// 出口目的地（关卡图扩展口，单向推进）：每道出口门独立声明"刷卡通过后去哪"——
-///   - LinearNext(默认)：关卡列表的线性下一关（今日行为，Room_01/02 零改动）；
-///   - Scene：任意指定关卡（分支 / 非线性路径；场景须已加入 Build Settings）；
-///   - Ending：不加载关卡，通知流程进入结局（结局在 EndingCatalog 登记，演出默认 Room_00）。
-/// 作者约定：锚点放在门洞正中，+Z = 穿越方向，localScale 保持 1。
-/// 注：玩家出生不在这里处理——出生位置固定在 Player 场景的 Player 对象上（直接拖它即可），
-/// 只在开局用一次，不占用关卡/门系统的锚点机制。
+/// 出口"刷卡后去哪"不在锚点上配置 —— 目的地由刷卡钥匙(卡片)携带(见 Card.cs 头注释)，
+/// 刷卡瞬间由 LevelTransitionManager 从卡读取。本锚点只管：门在哪个门洞、位姿基准与穿门落点。
+///
+/// 作者约定（朝向语义，两侧必须成对正确，否则穿门方向/门面纹理就反）：
+///   - 两关锚点 +Z 都沿玩家"连续前进"的方向：出口锚点 +Z 指向门洞外侧（穿门离开本关的方向，
+///     玩家从 -Z 侧走向门）；入口锚点 +Z 指向目标关的纵深（进门后继续走的方向）。
+///     多数相邻两关 = 两锚点世界朝向相同（都朝同一条前进路径）；摆法是否对，Play 里走一遍即知：
+///     穿过瞬间应正对目标关纵深、门面纹理应朝玩家来路可见。
+///   - 常见错误：把某一侧锚点转反（如出口锚点 +Z 指向房间内）→ 门面平面背对玩家不可见，
+///     穿门落点/朝向也反。
+///   - 锚点放在门洞正中，localScale 保持 1。
+/// 注：玩家出生 / 无门转换的落点在 PlayerSpawnPoint 处理（开局 BeginRun 与带落点的直达
+/// RequestDirectSwitch 会落到目标关默认出生点，见 LevelTransitionManager.PlayerLanding）；
+/// 入口 / 出口锚点仍只管门演出与穿门落点，两者不重叠。
 /// </summary>
 public class LevelAnchor : MonoBehaviour
 {
     public enum AnchorType { Entry, Exit }
 
-    /// <summary>出口门刷卡通过后的去向（LinearNext = 列表线性下一关，默认）。</summary>
+    /// <summary>刷卡钥匙携带的出口去向(None = 未配置 —— 刷出口门直接报错拒绝,强制显式配置)。
+    /// 本枚举定义在此处供卡片(Card)复用;LinearNext = 关卡列表线性下一关。</summary>
     public enum DestinationKind
     {
+        None,
         LinearNext,
         Scene,
         Ending,
@@ -39,27 +50,7 @@ public class LevelAnchor : MonoBehaviour
     [SerializeField, Tooltip("可选：出口门上的 SlidingDoor（门是 FBX 实例等无法重挂父子时用显式引用）")]
     private SlidingDoor exitDoor;
 
-    // === 出口目的地配置(只对 Exit 锚点有意义;Entry 保持默认 LinearNext 即可) ===
-    [SerializeField, Tooltip("刷卡通过后的去向：LinearNext=列表下一关(默认)；Scene=下方指定场景；Ending=触发结局(填结局 id)")]
-    private DestinationKind destinationKind = DestinationKind.LinearNext;
-
-#if UNITY_EDITOR
-    [SerializeField, Tooltip("destinationKind = Scene 时的目标关卡场景（须已加入 Build Settings）")]
-    private SceneAsset destinationScene;
-#endif
-
-    [SerializeField, HideInInspector]
-    private string destinationScenePath;
-
-    [SerializeField, Tooltip("destinationKind = Ending 时的结局 id（见 EndingCatalog，如 \"ending_demo\"）")]
-    private string endingId = "";
-
     public AnchorType Type => type;
-    public DestinationKind Destination => destinationKind;
-    /// <summary>目标关卡场景路径（destinationKind = Scene 时有效；空 = 未配置）。</summary>
-    public string DestinationScenePath => destinationScenePath;
-    /// <summary>结局 id（destinationKind = Ending 时有效）。</summary>
-    public string EndingId => endingId;
 
     /// <summary>出口门的 SlidingDoor：显式引用优先，缺省时在锚点子物体中查找。</summary>
     public SlidingDoor ResolveExitDoor()
@@ -97,29 +88,6 @@ public class LevelAnchor : MonoBehaviour
     }
 
 #if UNITY_EDITOR
-    private void OnValidate()
-    {
-        // 目标场景镜像为路径(与 LevelTransitionManager.levels 同一模式:运行时只走路径加载)
-        if (destinationScene != null)
-        {
-            destinationScenePath = AssetDatabase.GetAssetPath(destinationScene);
-            if (destinationScenePath != gameObject.scene.path && !IsInBuildSettings(destinationScenePath))
-                Debug.LogWarning($"[LevelAnchor] 出口目的地 {destinationScenePath} 未加入 Build Settings(File → Build Settings → Scenes in Build),运行时无法加载", this);
-        }
-        else if (destinationKind == DestinationKind.Scene)
-        {
-            destinationScenePath = "";
-            Debug.LogWarning($"[LevelAnchor] {name} 的 destinationKind = Scene 但未拖入目标场景,刷卡时将无法通过。", this);
-        }
-    }
-
-    private static bool IsInBuildSettings(string path)
-    {
-        foreach (var s in EditorBuildSettings.scenes)
-            if (s.path == path) return true;
-        return false;
-    }
-
     private void OnDrawGizmos()
     {
         // 锚点朝向箭头：+Z = 穿越方向（Entry 绿 / Exit 橙）。两关锚点朝向一致是传送数学正确的前提。
@@ -138,14 +106,8 @@ public class LevelAnchor : MonoBehaviour
             Gizmos.DrawWireCube(transform.position, Vector3.one * 0.6f);
         }
 
-        // 出口标注目的地(LinearNext 不标;Scene / Ending 标出目标,编辑期一眼可查关卡图)
-        string dest = "";
-        if (type == AnchorType.Exit && destinationKind == DestinationKind.Scene)
-            dest = $" → {System.IO.Path.GetFileNameWithoutExtension(destinationScenePath)}";
-        else if (type == AnchorType.Exit && destinationKind == DestinationKind.Ending)
-            dest = $" → 结局[{endingId}]";
         Handles.Label(transform.position + Vector3.up * 0.4f,
-            $"{gameObject.name} · {(type == AnchorType.Entry ? "Entry" : "Exit")} · +Z 穿越方向{dest}");
+            $"{gameObject.name} · {(type == AnchorType.Entry ? "Entry" : "Exit")} · +Z 穿越方向");
     }
 #endif
 }

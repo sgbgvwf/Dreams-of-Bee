@@ -9,7 +9,8 @@ using UnityEngine;
 ///
 /// 与门系统的分工:正常关卡推进仍走刷卡门(RequestExitKeyed → T0–T3 门演出,落点由 PortalDoor 负责);
 /// 本组件的直达方法跳过钥匙与门演出,只做无演出的场景转换(调试 / 演示 / 选关 / 彩蛋)。
-/// 玩家落点与钥匙语义不是本组件的职责 —— 直达后玩家原地不动,需要落点由调用方自理。
+/// 直达落点由 landAtTargetSpawn 开关配置(开 = 落到目标关出生点 PlayerSpawnPoint,默认;
+/// 关 = 玩家原地不动,旧行为)—— 目标关没摆出生点标记时,开也等于原地(管理器留日志)。
 ///
 /// 放置指南(每场景保证一个):
 ///   - 每个关卡场景:在场景根建一个空物体挂本组件(建议命名 "Scene Transition"),
@@ -23,6 +24,15 @@ using UnityEngine;
 /// </summary>
 public class SceneTransition : MonoBehaviour
 {
+    [SerializeField, Tooltip("直达换场景(GoToNextLevel / GoToLevel)后是否把玩家放到目标关的出生点(PlayerSpawnPoint)。\n开 = 落到目标关出生点(默认;各关独立摆放世界坐标下,直达后原地往往=悬空坠落);\n关 = 玩家原地不动(旧行为,慎用)。目标关没摆出生点时,开也等于原地(管理器留日志)。")]
+    private bool landAtTargetSpawn = true;
+
+    /// <summary>直达请求的落点 = 开关决定的目标关出生点 / 保持原位。</summary>
+    private LevelTransitionManager.PlayerLanding DirectLanding =>
+        landAtTargetSpawn
+            ? LevelTransitionManager.PlayerLanding.LevelSpawnPoint
+            : LevelTransitionManager.PlayerLanding.KeepCurrent;
+
     /// <summary>
     /// 回主菜单(经流程:自动存档 → 收局 → 卸载关卡/玩家 → Room_00 背景)。
     /// 只在游玩中有效;其它状态(主菜单 / 结局 / 开发直玩)由流程拒绝并留日志。
@@ -35,6 +45,7 @@ public class SceneTransition : MonoBehaviour
     /// <summary>
     /// 直达线性下一关(无门演出;跳过当前关的刷卡钥匙流程)。
     /// 不存在下一关(最后一关 / 当前关不在列表)或非稳定点会被 Manager 拒绝并留日志。
+    /// 落点由 landAtTargetSpawn 决定(默认:目标关出生点)。
     /// </summary>
     public void GoToNextLevel()
     {
@@ -50,12 +61,13 @@ public class SceneTransition : MonoBehaviour
             Debug.LogWarning($"[SceneTransition] {name}: 当前关(序数 {ltm.CurrentLevelIndex})没有线性下一关，忽略 GoToNextLevel", this);
             return;
         }
-        ltm.RequestDirectSwitch(ltm.GetLevelPath(next));
+        ltm.RequestDirectSwitch(ltm.GetLevelPath(next), DirectLanding);
     }
 
     /// <summary>
     /// 直达关卡注册表第 levelIndex 关(选关 UI / 彩蛋传送 / 调试;无门演出)。
     /// 序号越界、目标非法或非稳定点会被 Manager 拒绝并留日志。
+    /// 落点由 landAtTargetSpawn 决定(默认:目标关出生点)。
     /// </summary>
     public void GoToLevel(int levelIndex)
     {
@@ -71,7 +83,7 @@ public class SceneTransition : MonoBehaviour
             Debug.LogWarning($"[SceneTransition] {name}: 关卡序号 {levelIndex} 越界(共 {ltm.LevelCount} 关)，忽略 GoToLevel", this);
             return;
         }
-        ltm.RequestDirectSwitch(path);
+        ltm.RequestDirectSwitch(path, DirectLanding);
     }
 
     /// <summary>

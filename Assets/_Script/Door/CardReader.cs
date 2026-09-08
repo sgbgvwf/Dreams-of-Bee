@@ -2,17 +2,17 @@ using UnityEngine;
 
 /// <summary>
 /// 门禁读卡器：携带的钥匙（IDoorKey，卡片只是第一个实现）进入读卡器的触发器区域 → 刷卡成功。
-/// - 有 LevelTransitionManager（关卡过渡系统）时：刷卡只负责触发（T0），
-///   门由管理器在目的地关加载 + 对齐完成后打开，保证"先加载、后开门"的顺序；
-///   刷的不是当前关的出口门会被管理器拒绝（防走回头路 / 刷错门）。
+/// - 有 LevelTransitionManager（关卡过渡系统）时：刷卡只负责触发（T0），钥匙身份随请求
+///   上报 —— 刷卡"去哪" = 卡上目的地，由管理器在刷卡瞬间读取裁决（同一扇出口门刷不同卡
+///   去不同地方；卡没配目的地会报错拒绝）。门由管理器在目的地关加载 + 对齐完成后打开，
+///   保证"先加载、后开门"的顺序；刷的不是当前关的出口门会被管理器拒绝（防走回头路 / 刷错门）。
 /// - 无过渡系统时：保持原有行为 —— 刷卡直接开门（刷卡只开门，从不关门）。
 /// - 刷卡成功会给 successLight（LightColorAlternator）亮第二种预设色（如绿色）作反馈。
 ///
-/// 归属判定（都在读卡器侧按"这把钥匙 vs 这扇门"进行，不依赖全局关卡序号 ——
-/// 出口门指向任意关卡 / 一关多门时依然成立）：
-///   - 门与钥匙的 LevelIndex 都 ≥ 0 时要求相等（防止上一关的钥匙被带进新关后乱开门）；
-///   - requiredItemId 非空时只放行 KeyId 与之相同的钥匙（同一关多扇门各配钥匙时用；
-///     钥匙的 KeyId 来自 Interactable.itemId，给钥匙配 itemId 即可，其余内容零感知）；
+/// 放行判定（都在读卡器侧进行）：
+///   - requiredItemId 非空时只放行 KeyId 与之相同的钥匙（给钥匙配 Interactable.itemId 即可）；
+///     空 = 进触发区的钥匙都放行（刷卡去哪由钥匙上的目的地决定，见 Card.cs —— 归属关卡概念
+///     已删除：关卡物件随穿门卸载销毁，钥匙带不出关，无需关卡序号校验）；
 ///   - 管理器未进入稳定点（开局 / 读档恢复中）时静默忽略 —— 读档落回读卡区的钥匙不会自动重刷。
 ///
 /// 配置：读卡器挂本脚本，加一个 Is Trigger 的 Collider 作为刷卡范围（"读卡器附近"），
@@ -51,16 +51,7 @@ public class CardReader : MonoBehaviour
             return;
         }
 
-        // 钥匙 ↔ 门归属：都在本关声明时要求相等 —— 防止上一关的钥匙被带进新关后乱开门。
-        // 注意：比较对象是门自己的 LevelIndex（读卡器就是为这扇门服务的），不是全局关卡序号。
-        if (door.LevelIndex >= 0 && key.LevelIndex >= 0 && key.LevelIndex != door.LevelIndex)
-        {
-            Debug.Log($"[CardReader] {name}: 这把钥匙属于第 {key.LevelIndex} 关，这扇门是第 {door.LevelIndex} 关的，拒绝刷卡", this);
-            Deny();
-            return;
-        }
-
-        // 身份分流：本读卡器指定了钥匙 Id → 只认对钥匙（同关多门各配钥匙）
+        // 身份分流：本读卡器指定了钥匙 Id → 只认对钥匙；空 = 进触发区的钥匙都放行
         if (!string.IsNullOrEmpty(requiredItemId) && key.KeyId != requiredItemId)
         {
             Debug.Log($"[CardReader] {name}: 钥匙身份不匹配（需要 {requiredItemId}），拒绝刷卡", this);
@@ -68,10 +59,10 @@ public class CardReader : MonoBehaviour
             return;
         }
 
-        SwipeSucceeded();
+        SwipeSucceeded(key);
     }
 
-    private void SwipeSucceeded()
+    private void SwipeSucceeded(IDoorKey key)
     {
         bool accepted;
         var manager = LevelTransitionManager.Instance;
@@ -81,8 +72,9 @@ public class CardReader : MonoBehaviour
             if (!manager.IsSettled) return;
 
             // 关卡过渡模式：刷卡 = T0 触发（走封装层公开入口 RequestExitKeyed），
+            // 钥匙身份随请求上报 —— 目的地由卡携带、管理器在刷卡瞬间读取裁决；
             // 门由管理器在加载+对齐完成后打开（顺序由管理器保证）
-            accepted = manager.RequestExitKeyed(door);
+            accepted = manager.RequestExitKeyed(door, key);
         }
         else
         {

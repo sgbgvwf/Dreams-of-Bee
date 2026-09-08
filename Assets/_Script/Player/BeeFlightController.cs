@@ -14,13 +14,15 @@ using UnityEngine.Serialization;
 ///         out of stamina, switches straight to Falling - no bounce, no hover.
 ///       * Touching ANY object (OnCollisionStay) -> Crawling ("趴着"): the bee sticks to floors,
 ///         walls, ceilings and any geometry, moves along the contact surface.
-///         (例外：持物时不能攀爬——拿着东西接触表面不会进入 Crawling，物品不会被强制掉落)
+///         持物也能趴着:拿着东西接触表面同样进入 Crawling（停住、可恢复体力），
+///         但持物爬行移动速度恒为 0 —— 拿东西只能原地趴在表面上，按 W 不会前进。
 ///       * Otherwise -> Falling: simulated gravity (Rigidbody.AddForce with
 ///         ForceMode.Acceleration) pulls the bee down - Unity's built-in rb.useGravity is NEVER
 ///         used. Gravity acts ONLY while Falling: after a release, or when stamina runs out.
 ///         Landing on any object switches back to Crawling.
-///   - Stamina: flying drains it; EVERY other state (crawling and falling alike) restores it -
-///     只要不是飞行状态就恢复体力，持物 / 坠落不会卡住恢复。
+///   - Stamina: flying drains it; ONLY crawling restores it - Falling is neutral, so an empty
+///     tank cannot be fluttered back mid-air: land on a surface, crawl, then take off again.
+///     持物趴着同样恢复体力(持物时爬行速度为 0,仍能趴住回蓝后再起飞)。
 ///   - The body transform is pure presentation: it aligns to the contact surface while crawling
 ///     and rigidly matches the camera look direction (yaw + pitch) while
 ///     flying/falling — 蜜蜂没有脖子,视角朝向就是身体朝向,无滞后跟随。
@@ -33,12 +35,15 @@ public class BeeFlightController : MonoBehaviour
     public enum BeeState { Crawling, Flying, Falling }
 
     [Header("飞行 Flight")]
-    [SerializeField, Tooltip("Forward fly speed in meters per second (hold W while flying).")]
-    private float flySpeed = 8f;
+    [SerializeField, Tooltip("Forward fly speed when empty-handed, in meters per second (hold Space while flying).")]
+    private float flySpeed = 5f;
+
+    [SerializeField, Tooltip("Forward fly speed while carrying an item, in m/s. 持物负重飞行更慢。")]
+    private float flySpeedWhileHolding = 3f;
 
     [Header("爬行 Crawling")]
     [SerializeField, Tooltip("Crawl speed along surfaces in meters per second (hold W while touching).")]
-    private float crawlSpeed = 2.5f;
+    private float crawlSpeed = 2f;
 
     [SerializeField, Tooltip("Slerp speed for aligning the body to the crawl surface (higher = snappier).")]
     private float bodyAlignSpeed = 10f;
@@ -55,13 +60,13 @@ public class BeeFlightController : MonoBehaviour
     private float maxFallSpeed = 12f;
 
     [Header("体力 Stamina")]
-    [SerializeField, Tooltip("Max stamina. Flying (holding Space) drains it, every other state (crawling or falling) restores it.")]
+    [SerializeField, Tooltip("Max stamina. Flying (holding Space) drains it; ONLY crawling restores it - falling does not.")]
     private float maxStamina = 100f;
 
     [SerializeField, Tooltip("Stamina drained per second while flying.")]
     private float flyStaminaDrainPerSecond = 25f;
 
-    [SerializeField, FormerlySerializedAs("crawlStaminaRegenPerSecond"), Tooltip("Stamina restored per second while not flying (crawling or falling).")]
+    [SerializeField, FormerlySerializedAs("crawlStaminaRegenPerSecond"), Tooltip("Stamina restored per second while crawling (趴着). 只有趴着才恢复体力,坠落不恢复。")]
     private float staminaRegenPerSecond = 15f;
 
     [Header("引用 References")]
@@ -76,7 +81,7 @@ public class BeeFlightController : MonoBehaviour
     private InputAction lookAction;
     private InputAction takeOffAction;
     private Rigidbody rb;  // auto-added if missing - physics-driven flight requires it
-    private BeeInteractionController interaction;   // 同物体上的交互控制器：持物时禁止攀爬
+    private BeeInteractionController interaction;   // 同物体上的交互控制器：持物爬行速度为 0（IsHolding 查询）
 
     // --- Look state (accumulated in floats to avoid quaternion drift) ---
     private float yaw;    // world Y axis (degrees)
@@ -97,6 +102,11 @@ public class BeeFlightController : MonoBehaviour
     public float MaxStamina => maxStamina;
     public float StaminaNormalized => maxStamina > 0f ? stamina / maxStamina : 0f;
     public BeeState CurrentState => state;
+
+    /// <summary>落水救援 / 未来剧情接管期间锁定玩家输入:不响应移动(爬行 / 起飞)与视角。
+    /// 只锁输入不冻结世界 —— 时间与物理照常流动,蜜蜂会悬停或趴在表面;接管方负责结束时复位。</summary>
+    public bool InputLocked { get; set; }
+
     /// <summary>Fired whenever stamina changes by more than 0.001 (param = current stamina).</summary>
     public event Action<float> StaminaChanged;
     /// <summary>Fired whenever the bee switches between Crawling/Flying/Falling.</summary>
@@ -105,7 +115,7 @@ public class BeeFlightController : MonoBehaviour
 
     // --- 爬行脚步计时(音效:每步广播一次 GameEvents.CrawlStep) ---
     private float stepTimer;
-    private const float stepInterval = 0.4f;   // 爬行速度 2.5 m/s,约每 1 米一步
+    private const float stepInterval = 0.5f;   // 爬行速度 2 m/s,约每 1 米一步
 
     private void Awake()
     {
@@ -132,9 +142,9 @@ public class BeeFlightController : MonoBehaviour
 
     private void Update()
     {
-        // 暂停菜单打开时让出控制:HandleCursor 每帧会锁回菜单释放的光标,
+        // 暂停菜单 / 落水救援(InputLocked)时让出控制:HandleCursor 每帧会锁回菜单释放的光标,
         // 其余输入 / 体力结算本就靠 controlled(光标锁定)门控,timeScale=0 已冻结物理与增量。
-        if (PauseMenu.IsPaused) return;
+        if (PauseMenu.IsPaused || InputLocked) return;
 
         HandleCursor();
 
@@ -153,23 +163,22 @@ public class BeeFlightController : MonoBehaviour
         rb.useGravity = false;
         rb.angularVelocity = Vector3.zero;
 
-        bool controlled = Cursor.lockState == CursorLockMode.Locked && cameraTransform != null;
+        bool controlled = !InputLocked && Cursor.lockState == CursorLockMode.Locked && cameraTransform != null;
         bool lifting = controlled && takeOffAction != null && takeOffAction.IsPressed();
 
         // Re-derive the state from input + physical contact every physics step:
         //   holding Space with stamina > 0 -> Flying; touching any object -> Crawling; else Falling.
-        // 持物时不能攀爬：还拿着东西时接触任何表面都不会进入 Crawling（物品不会被强制掉落）——
-        // 爬行中拿起物品，下一物理步就因持物而失去爬行状态，蜜蜂自己从表面掉下去（物品仍在手里）。
-        bool holding = interaction != null && interaction.IsHolding;
+        // 持物不限制状态：拿着东西接触表面同样进入 Crawling（能趴住、能回体力），
+        // 只是爬行移动速度为 0（见 CrawlStep）——持物不会再被迫坠落。
         BeeState next = lifting && stamina > 0f ? BeeState.Flying
-                      : hasContact && !holding ? BeeState.Crawling
+                      : hasContact ? BeeState.Crawling
                       : BeeState.Falling;
         if (next != state)
         {
             var prev = state;
             state = next;
             StateChanged?.Invoke(state);
-            GameEvents.BeeStateChanged?.Invoke(prev, next);   // 注册式音效同步点(起飞/落地/坠地 + 振翅/落风循环)
+            GameEvents.BeeStateChanged?.Invoke(prev, next);   // 注册式音效同步点(起飞/落地/坠地 + 落风循环)
         }
 
         switch (state)
@@ -292,6 +301,37 @@ public class BeeFlightController : MonoBehaviour
     }
 
     /// <summary>
+    /// 传送到世界坐标(出生点落点 / 直达换场景落点 / 未来剧情传送共用)。
+    /// - 只清陈旧接触不清状态:状态由下一物理步按新场景接触重推(同 ApplyPortalTransform),不广播状态事件;
+    /// - yawDegrees 非空 = 重置正视朝向:只取水平角,俯仰归零 —— 出生点/落点标记的 +Z 是水平朝向,
+    ///   作者手抖带俯仰也会被归零;为空 = 保持当前视角(纯移位的用法);
+    /// - resetVelocity 默认清零速度(落点重启手感;要保留动量(如跌落回弹)再关掉);
+    /// - 持物无需特殊处理:持物在 LateUpdate 刚性跟随玩家,跨场景时随旧场景卸载销毁,
+    ///   由 BeeInteractionController.LateUpdate 的销毁守卫清空手上状态;
+    /// - 相机无需额外处理:BeeFlightController.LateUpdate 每帧硬同步到刚体位姿(同帧或下一帧追上)。
+    /// </summary>
+    public void TeleportTo(Vector3 position, float? yawDegrees = null, bool resetVelocity = true)
+    {
+        if (rb == null) return;
+
+        rb.position = position;
+        if (yawDegrees.HasValue)
+        {
+            yaw = yawDegrees.Value;
+            pitch = 0f;
+            rb.rotation = Quaternion.Euler(0f, yaw, 0f);
+        }
+        if (resetVelocity)
+            rb.velocity = Vector3.zero;
+
+        // 传送不触发 OnCollisionExit:清陈旧接触,下一物理步按新场景接触重新推导(同 ApplyPortalTransform)
+        hasContact = false;
+        contactNormal = Vector3.up;
+
+        Physics.SyncTransforms();   // 项目 AutoSyncTransforms=0:立即同步,防传送后一帧物理回跳
+    }
+
+    /// <summary>
     /// Camera forward derived directly from the accumulated angles. Use this instead of
     /// cameraTransform.forward inside FixedUpdate (the camera is only synced in LateUpdate).
     /// </summary>
@@ -311,7 +351,9 @@ public class BeeFlightController : MonoBehaviour
 
         motionDir.Normalize();
 
-        bool moving = moveAction != null && moveAction.IsPressed();
+        // 持物爬行速度为 0:能趴住停靠 / 回体力,但按 W 不会前进(物品仍在手里、不会强制掉落)
+        bool moving = !InputLocked && moveAction != null && moveAction.IsPressed()
+                      && (interaction == null || !interaction.IsHolding);
         rb.velocity = motionDir * (moving ? crawlSpeed : 0f);  // pure tangential - contact keeps the bee on the surface
 
         // 爬行脚步:按步距计时广播,音效系统注册监听(每步一响,可重复)
@@ -335,10 +377,12 @@ public class BeeFlightController : MonoBehaviour
     /// Fly while Space is held: constant speed along the camera's look direction
     /// (look where you go, W is not involved). Releasing Space or running out of
     /// stamina re-derives the state as Falling - gravity takes over immediately.
+    /// 持物负重飞行用 flySpeedWhileHolding（比空手慢）；持物能趴着回体力、不能爬着前进。
     /// </summary>
     private void FlyStep()
     {
-        rb.velocity = GetCameraForward() * flySpeed;
+        bool carrying = interaction != null && interaction.IsHolding;
+        rb.velocity = GetCameraForward() * (carrying ? flySpeedWhileHolding : flySpeed);
         FollowCameraLook();
     }
 
@@ -373,8 +417,8 @@ public class BeeFlightController : MonoBehaviour
     }
 
     /// <summary>
-    /// Drain stamina while flying, restore it in every other state (crawling '趴着' and falling
-    /// alike) - 只要不是飞行状态就恢复体力，持物 / 坠落都不会卡住恢复。Skipped while the cursor is free (Alt pause).
+    /// Stamina economy: Flying drains it; ONLY Crawling ('趴着') restores it; Falling is neutral
+    /// (体力耗尽后不能在空中回蓝 - 必须落地趴着恢复才能再次起飞). Skipped while the cursor is free (Alt pause).
     /// </summary>
     private void UpdateStamina(bool controlled)
     {
@@ -383,8 +427,9 @@ public class BeeFlightController : MonoBehaviour
         float before = stamina;
         if (state == BeeState.Flying)
             stamina = Mathf.Max(0f, stamina - flyStaminaDrainPerSecond * Time.deltaTime);
-        else
+        else if (state == BeeState.Crawling)
             stamina = Mathf.Min(maxStamina, stamina + staminaRegenPerSecond * Time.deltaTime);
+        // Falling: 既不消耗也不恢复
         if (Mathf.Abs(stamina - before) > 0.001f)
             StaminaChanged?.Invoke(stamina);
     }

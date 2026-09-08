@@ -46,7 +46,7 @@ Light:
   m_Shape: 0
   m_Color: {r: 1, g: 1, b: 1, a: 1}
   m_Intensity: 2095.2095
-  m_Range: 10
+  m_Range: 20
   m_SpotAngle: 20
   m_InnerSpotAngle: 2
   m_CookieSize: 10
@@ -248,7 +248,7 @@ Transform:
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0.7071068, z: 0.7071068, w: 0}
   m_LocalPosition: {x: 1.3, y: 0.45, z: -9.18}
-  m_LocalScale: {x: 200, y: 200.00002, z: 200.00002}
+  m_LocalScale: {x: 200.00009, y: 200.00008, z: 200.00008}
   m_ConstrainProportionsScale: 1
   m_Children:
   - {fileID: 5257646042549220428}
@@ -346,7 +346,8 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   type: 0
-  carryRotationOffset: {x: 0.7071068, y: 0, z: 0, w: 0.7071068}
+  carryRotationOffset: {x: -0.00000003090862, y: 0.70710677, z: -0.70710677, w: -0.00000003090862}
+  itemId: 
 --- !u!65 &8161094558610863844
 BoxCollider:
   m_ObjectHideFlags: 0
