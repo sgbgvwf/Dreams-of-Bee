@@ -1,0 +1,115 @@
+{
+  "version": 1,
+  "name": "Input Action",
+  "maps": [
+    {
+      "name": "Keyboard and Mouse",
+      "id": "55becf5b-8587-4589-b49a-560c914940d7",
+      "actions": [
+        {
+          "name": "Fly",
+          "type": "Button",
+          "id": "36e1ea4f-3235-45a7-b1b0-7a00759f73af",
+          "expectedControlType": "",
+          "processors": "",
+          "interactions": "",
+          "initialStateCheck": false
+        },
+        {
+          "name": "Look",
+          "type": "Value",
+          "id": "c9f2e1d4-8b6a-4f3c-9e2d-1a5b7c3d8e9f",
+          "expectedControlType": "Vector2",
+          "processors": "",
+          "interactions": "",
+          "initialStateCheck": false
+        },
+        {
+          "name": "Interact",
+          "type": "Button",
+          "id": "7d4f2c9e-1a3b-4c5d-8e6f-0a1b2c3d4e5f",
+          "expectedControlType": "",
+          "processors": "",
+          "interactions": "",
+          "initialStateCheck": false
+        },
+        {
+          "name": "TakeOff",
+          "type": "Button",
+          "id": "35c1a195-fc61-4d65-9adc-3e85b29dccca",
+          "expectedControlType": "",
+          "processors": "",
+          "interactions": "",
+          "initialStateCheck": false
+        },
+        {
+          "name": "Pause",
+          "type": "Button",
+          "id": "7a5c3e1d-9b2f-4a6c-8d3e-1f0a2b3c4d5e",
+          "expectedControlType": "Button",
+          "processors": "",
+          "interactions": "",
+          "initialStateCheck": false
+        }
+      ],
+      "bindings": [
+        {
+          "name": "",
+          "id": "4c2204b4-6fe2-4052-ac9b-b2bc954d31be",
+          "path": "<Keyboard>/w",
+          "interactions": "",
+          "processors": "",
+          "groups": "",
+          "action": "Fly",
+          "isComposite": false,
+          "isPartOfComposite": false
+        },
+        {
+          "name": "",
+          "id": "f1a2b3c4-d5e6-4789-a1b2-c3d4e5f60718",
+          "path": "<Mouse>/delta",
+          "interactions": "",
+          "processors": "",
+          "groups": "",
+          "action": "Look",
+          "isComposite": false,
+          "isPartOfComposite": false
+        },
+        {
+          "name": "",
+          "id": "2a9b8c7d-6e5f-4a3b-2c1d-0e9f8a7b6c5d",
+          "path": "<Mouse>/rightButton",
+          "interactions": "",
+          "processors": "",
+          "groups": "",
+          "action": "Interact",
+          "isComposite": false,
+          "isPartOfComposite": false
+        },
+        {
+          "name": "",
+          "id": "7fae8e33-4079-490b-84e9-867d41d7d539",
+          "path": "<Keyboard>/space",
+          "interactions": "",
+          "processors": "",
+          "groups": "",
+          "action": "TakeOff",
+          "isComposite": false,
+          "isPartOfComposite": false
+        },
+        {
+          "name": "",
+          "id": "8b6d4f2e-ac3d-4b7a-9e4f-2a1b3c4d5e6f",
+          "path": "<Keyboard>/escape",
+          "interactions": "",
+          "processors": "",
+          "groups": "",
+          "action": "Pause",
+          "isComposite": false,
+          "isPartOfComposite": false
+        }
+      ]
+    }
+  ],
+  "controlSchemes": []
+}

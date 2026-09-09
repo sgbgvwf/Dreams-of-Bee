@@ -1,6 +1,4 @@
 using UnityEngine;
-using UnityEngine.EventSystems;
-using UnityEngine.UI;
 
 /// <summary>
 /// 暂停系统 + 暂停菜单(UI 场景化后只留行为;视觉对象在 Persistance 场景的 "Pause Canvas" 下,
@@ -14,19 +12,19 @@ using UnityEngine.UI;
 ///     因此 timeScale = 0 时画面与机制自然全部冻结,无需逐个脚本通知。
 ///   - 而 MonoBehaviour.Update / EventSystem / uGUI 输入照常运行 → 菜单可以点击、可以再按 Esc 恢复。
 ///   - 播放中的音效(风声循环等)不随 timeScale 停,统一用 AudioListener.pause 静音。
-///   - 打开菜单时让出光标控制:BeeFlightController.HandleCursor 每帧会把光标锁回,
-///     它读到 PauseMenu.IsPaused 后会让出(见该脚本 Update 首行);光标与 timeScale 由本类统一管理。
+///   - 光标由本类统一管理:Pause 释放 / Resume 锁回;进入游玩时由玩家场景的
+///     BeeFlightController.Start 锁定,菜单 / 结局由 GameFlowManager 释放 —— 无逐帧干预者。
 ///
-/// Esc 直接轮询 Keyboard.current(Esc 全项目未被占用),暂不进 Input Action 资产;
-/// 日后做手柄 / 按键重映射时再迁移到 Settings/Input Action.inputactions 里。
-/// 暂停只属于游玩:主菜单 / 结局时 Esc 不操作暂停(CanOperatePause 门控)。
+/// Esc 不在这里:常驻的 PauseInput 经 GameInput.Pause 监听 Esc(资产里已绑 Esc),
+/// 满足状态门控时调 Pause()/Resume()(见 PauseInput.CanPause)。
+/// 暂停只属于游玩:主菜单 / 结局时 Esc 不操作暂停(CanPause 门控)。
 /// </summary>
 public class PauseMenu : MonoBehaviour
 {
     /// <summary>常驻实例(Persistance 场景;开发者直玩无此场景时为 null)。</summary>
     public static PauseMenu Instance { get; private set; }
 
-    /// <summary>游戏是否处于暂停(菜单打开)。BeeFlightController 借此让出光标控制。</summary>
+    /// <summary>游戏是否处于暂停(菜单打开)。BeeFlightController 据此停摆输入与体力结算。</summary>
     public static bool IsPaused;
 
     // === 场景引用(在 Persistance 场景的 "Pause Canvas" 下绑定) ===
@@ -41,16 +39,7 @@ public class PauseMenu : MonoBehaviour
             return;
         }
         Instance = this;
-
-        // 本场景的 EventSystem 输入模块动作槽为空(场景化后没有运行时自建),补默认 Point/Click 绑定;
-        // 找不到(直玩)则跳过 —— 无菜单可点。
-        var es = FindObjectOfType<EventSystem>();
-        if (es != null)
-        {
-            var module = es.GetComponent<UnityEngine.InputSystem.UI.InputSystemUIInputModule>();
-            if (module != null && module.actionsAsset == null)
-                module.AssignDefaultActions();
-        }
+        // EventSystem 的 UI 输入模块在场景里已绑好动作资产,不需要运行时补丁。
     }
 
     private void OnDestroy()

@@ -7,7 +7,10 @@ using UnityEngine;
 ///   去不同地方；卡没配目的地会报错拒绝）。门由管理器在目的地关加载 + 对齐完成后打开，
 ///   保证"先加载、后开门"的顺序；刷的不是当前关的出口门会被管理器拒绝（防走回头路 / 刷错门）。
 /// - 无过渡系统时：保持原有行为 —— 刷卡直接开门（刷卡只开门，从不关门）。
-/// - 刷卡成功会给 successLight（LightColorAlternator）亮第二种预设色（如绿色）作反馈。
+/// - 每次成功刷卡都会让 successLight（LightColorAlternator）在两种预设色间切换一次作反馈：
+///   灯初态 = 色 A，第一次刷卡 A→B（“成功”色）；过渡未穿过前重刷（同卡或换卡）B→A、再刷 A→B……
+///   与“重刷 = 关门 + 卸载重载目的地”（LevelTransitionManager.RetargetRoutine）同一节奏：
+///   换色即表示本次读卡已被接受、重载已开始。被拒（Deny）/ 管理器静默忽略时不换色。
 ///
 /// 放行判定（都在读卡器侧进行）：
 ///   - requiredItemId 非空时只放行 KeyId 与之相同的钥匙（给钥匙配 Interactable.itemId 即可）；
@@ -27,7 +30,7 @@ public class CardReader : MonoBehaviour
     [SerializeField, Tooltip("本读卡器控制的滑动门（门根上的 SlidingDoor 组件）")]
     private SlidingDoor door;
 
-    [SerializeField, Tooltip("可选：刷卡成功时亮第二种预设色（如绿色）的 LightColorAlternator，留空自动从门的子物体查找")]
+    [SerializeField, Tooltip("可选：每次成功刷卡在两种预设色间切换一次的 LightColorAlternator（灯初态 = 色 A，第一次刷卡切到色 B；重刷继续交替），留空自动从门的子物体查找")]
     private LightColorAlternator successLight;
 
     [SerializeField, Tooltip("可选：要求的钥匙身份 Id（非空时只接受 KeyId 与之相同的钥匙）。同一关多扇门分流用；留空 = 只按关卡归属放行")]
@@ -89,10 +92,11 @@ public class CardReader : MonoBehaviour
             return;
         }
 
-        // 成功反馈：显示灯的第二种预设色（绿）
+        // 成功反馈：每刷一次灯切一次色（SwitchColor 在两种预设色间交替 —— 重刷也会换色，
+        // 换色 = 本次读卡已被接受。第一次刷卡恰好 = 初态 A → B，行为与旧 ShowColor(true) 一致）
         if (successLight == null && door != null)
             successLight = door.GetComponentInChildren<LightColorAlternator>(true);
-        if (successLight != null) successLight.ShowColor(true);
+        if (successLight != null) successLight.SwitchColor();
 
         GameEvents.CardSuccess?.Invoke(transform.position);   // 刷卡成功音效(注册式同步)
     }

@@ -2,43 +2,30 @@ using UnityEngine;
 using UnityEngine.InputSystem;
 
 /// <summary>
-/// 暂停输入(挂任意常驻物体,如 Persistance / 玩家场景):
+/// 暂停输入(挂常驻场景物体,如 Persistance 的 "Pause" GO):
 /// 满足两个条件才响应 Esc —— ① 状态允许(游玩中 / 开发者直玩;主菜单、结局忽略);
 /// ② 暂停组件在位(PauseMenu.Instance 存在)。
 /// 第一次 Esc → 暂停;第二次 Esc → 退出暂停。
 ///
-/// 按键走 Input System:Inspector 把 Settings/Input Action.inputactions 拖给 inputActions,
-/// 脚本取其中名为 "Pause" 的按钮动作(Esc 绑定已加在该资产里);没拖资产时自动用等价的
-/// 临时动作兜底(开发者直玩等场景不拖也能暂停)。
+/// Esc 动作经 GameInput 取(资产常驻 Resources,动作解析见 GameInput):
+/// 本组件不持有资产引用、无运行时兜底 —— 资产缺失 / 缺 Pause 动作由 GameInput 报错,
+/// 这里不订阅不响应,暂停不可用会以日志形式显式暴露。
 /// </summary>
 public class PauseInput : MonoBehaviour
 {
-    [SerializeField, Tooltip("Input Action 资产(Settings/Input Action.inputactions,需含名为 Pause 的按钮动作)。留空 = 临时动作兜底。")]
-    private InputActionAsset inputActions;
-
     private InputAction pauseAction;
 
     private void OnEnable()
     {
-        if (inputActions != null)
-            pauseAction = inputActions.FindAction("Pause");
-
-        if (pauseAction == null)
-        {
-            if (inputActions != null)
-                Debug.LogWarning("[PauseInput] 资产里没有名为 Pause 的动作,已用临时 Esc 动作兜底。", this);
-            pauseAction = new InputAction("Pause", InputActionType.Button, "<Keyboard>/escape");
-        }
-
+        pauseAction = GameInput.Pause;
+        if (pauseAction == null) return;   // GameInput 已报错:不订阅,防 NRE
         pauseAction.performed += OnPausePressed;
-        pauseAction.Enable();
     }
 
     private void OnDisable()
     {
         if (pauseAction == null) return;
         pauseAction.performed -= OnPausePressed;
-        pauseAction.Disable();
         pauseAction = null;
     }
 

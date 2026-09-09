@@ -160,6 +160,7 @@ public class GameFlowManager : MonoBehaviour
     private void SetState(FlowState next)
     {
         if (state == next) return;
+        FlowState prev = state;
         state = next;
 
         // 运行状态镜像:UI 组件轮询 FlowStateSO 自驱显隐(主菜单 UI 只在 MainMenu 状态亮),
@@ -167,7 +168,8 @@ public class GameFlowManager : MonoBehaviour
         FlowStateSO.Instance?.Write(state);
 
         // 游玩 HUD 的显隐由场景门控天然完成:体力条在 Player 场景(只在游玩加载),菜单 / 结局时玩家场景已卸载。
-        GameEvents.FlowStateChanged?.Invoke();
+        // 通用事件管线通知(先写镜像后 raise,处理器读镜像与比对载荷等价,见 Core/GameEvents.cs)。
+        GameEvents.FlowStateChanged?.Invoke(prev, next);
     }
 
     private void Update()

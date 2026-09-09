@@ -30,14 +30,12 @@ public class BeeInteractionController : MonoBehaviour
     [SerializeField, Tooltip("Distance below the player where a held item is carried.")]
     private float carryHeight = 0.8f;
 
-    [SerializeField, Tooltip("Input Action asset - must contain an 'Interact' button action (right mouse button).")]
-    private InputActionAsset inputActions;
-
     [SerializeField, Tooltip("Camera that provides the view direction. Auto-filled with the first child Camera if empty.")]
     private Transform cameraTransform;
 
     // --- Resolved references ---
     private InputAction interactAction;
+    private BeeFlightController flight;   // 同根飞行控制器：读 InputLocked（剧情接管门控），见 Update
 
     // --- Aim state (每帧瞄准检测的结果，按键交互复用) ---
     private Transform currentAim;       // 当前瞄准的命中 collider（null = 未瞄准可交互物）
@@ -77,26 +75,18 @@ public class BeeInteractionController : MonoBehaviour
     private void Awake()
     {
         ResolveReferences();
+        flight = GetComponent<BeeFlightController>();   // 文档约定两组件同挂 Player 根；取不到 = 交互门控不生效（维持旧行为）
         RegisterPlayerCollider();
-    }
-
-    private void OnEnable()
-    {
-        // Only this action is owned here; BeeFlightController owns the whole asset.
-        if (interactAction != null)
-            interactAction.Enable();
-    }
-
-    private void OnDisable()
-    {
-        if (interactAction != null)
-            interactAction.Disable();
     }
 
     private void Update()
     {
         if (cameraTransform == null || interactAction == null) return;
         if (Cursor.lockState != CursorLockMode.Locked) return;
+        // 输入被剧情接管（落水救援黑幕 / 全屏阅读界面等，见 BeeFlightController.InputLocked）时整帧停摆：
+        // 不瞄准、不描边、不分发 —— 接管方（ReadingOverlay 等）独占按键，避免黑幕/阅读期间盲触开关、拾物，
+        // 也避免"退出阅读的那一下右键"被本控制器同帧再分发出去重开界面。
+        if (flight != null && flight.InputLocked) return;
 
         UpdateAimOutline();   // 每帧：瞄准目标变化时更新描边
 
@@ -324,15 +314,7 @@ public class BeeInteractionController : MonoBehaviour
                 cameraTransform = cam.transform;
         }
 
-        if (inputActions != null)
-        {
-            interactAction = inputActions.FindAction("Interact");
-            if (interactAction == null)
-                Debug.LogWarning($"{name}: Input Action asset needs an 'Interact' action (bound to the right mouse button).", this);
-        }
-        else
-        {
-            Debug.LogWarning($"{name}: Assign the Input Action asset to the 'Input Actions' field.", this);
-        }
+        // 输入统一走 GameInput:资产缺失 / 缺动作由它报错,Interact 为 null → Update 整帧停摆(不崩)
+        interactAction = GameInput.Interact;
     }
 }

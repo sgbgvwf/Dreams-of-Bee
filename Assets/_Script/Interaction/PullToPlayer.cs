@@ -98,7 +98,7 @@ public class PullToPlayer : MonoBehaviour, IInteractable
         if (rb == null)
             Debug.LogWarning($"[PullToPlayer] {name}: 找不到 Rigidbody —— 施力需要动态刚体。请把本组件放到目标物体（Rigidbody 所在或其父级）上", this);
         else if (rb.isKinematic)
-            Debug.LogWarning($"[PullToPlayer] {name}: Rigidbody 是 Kinematic —— 施力无效。若它是被摆动机关锁着的物体，Kinematic 起步是预期配置；否则请取消勾选", this);
+            // Debug.LogWarning($"[PullToPlayer] {name}: Rigidbody 是 Kinematic —— 施力无效。若它是被摆动机关锁着的物体，Kinematic 起步是预期配置；否则请取消勾选", this);
         if (impulse == Vector3.zero)
             Debug.LogWarning($"[PullToPlayer] {name}: Impulse 为 0 —— 交互给了个寂寞。请在 Inspector 配方向与大小", this);
     }

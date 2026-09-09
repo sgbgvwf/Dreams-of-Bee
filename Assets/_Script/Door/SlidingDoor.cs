@@ -7,8 +7,8 @@ using System.Collections;
 /// reactive - it does nothing while idle; each call starts a coroutine that
 /// slides the door over duration seconds, then the coroutine ends. Assign
 /// the door's root Transform in the Inspector.
-/// The door slides along slideDirection (default +X, "opens to the right")
-/// by slideDistance units. The slideCurve maps slide progress (0..1) to
+/// The door slides along slideDirection (default local +X, "opens to the
+/// door's own right") by slideDistance units. The slideCurve maps slide progress (0..1) to
 /// displacement (0..1): a straight line is constant speed, an S-curve
 /// (the default) gives smooth ease-in / ease-out.
 /// The closed position is captured on first use, so the door can be freely
@@ -26,7 +26,7 @@ public class SlidingDoor : MonoBehaviour, ISceneSaveable
     [SerializeField, Tooltip("The door's root Transform to slide. Drag it here.")]
     private Transform door;
 
-    [SerializeField, Tooltip("Slide direction (world space). Default +X: opens to the right.")]
+    [SerializeField, Tooltip("Slide direction in the door's own local space (relative to its pose). Default +X: opens toward the door's own right, even when the door is posed at an angle.")]
     private Vector3 slideDirection = Vector3.right;
 
     [SerializeField, Tooltip("How far the door slides (world units). Open position = closed position + slideDirection * slideDistance.")]
@@ -241,7 +241,9 @@ public class SlidingDoor : MonoBehaviour, ISceneSaveable
     private void CaptureBaseline()
     {
         closedPosition = door.position;
-        openPosition = closedPosition + slideDirection * slideDistance;
+        // slideDirection 是门板自身的局部方向：旋转摆放的门也沿自己轴向滑动。
+        // 开门期间门板只平移不旋转，所以基线时换算一次即可，方向不会漂移。
+        openPosition = closedPosition + door.TransformDirection(slideDirection) * slideDistance;
         hasBaseline = true;
     }
 }

@@ -122,6 +122,13 @@ public sealed class PickupState
     public Vector3 localScale;
 }
 
+/// <summary>DrawerSlide 状态(抽屉开闭目标态;中途滑动不存进度,恢复 = 从关闭位重新滑向目标态)。</summary>
+[Serializable]
+public sealed class DrawerState
+{
+    public bool open;
+}
+
 /// <summary>玩家状态快照(存档瞬间;恢复时直接喂给 BeeFlightController / BeeInteractionController)。</summary>
 [Serializable]
 public sealed class PlayerSnapshot

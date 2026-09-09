@@ -28,7 +28,7 @@ using UnityEngine.Serialization;
 ///     flying/falling — 蜜蜂没有脖子,视角朝向就是身体朝向,无滞后跟随。
 ///   - The camera is hard-synced to the Player every frame (position + look rotation),
 ///     so it always follows even if it is not parented to the Player
-/// Hold Alt to release the cursor (control pauses); releasing Alt re-locks it.
+/// 光标:进入游玩由 Start 锁定,暂停菜单放 / 恢复锁由 PauseMenu 管理 —— 无 Alt 临时释放。
 /// </summary>
 public class BeeFlightController : MonoBehaviour
 {
@@ -70,9 +70,6 @@ public class BeeFlightController : MonoBehaviour
     private float staminaRegenPerSecond = 15f;
 
     [Header("引用 References")]
-    [SerializeField, Tooltip("Input Action asset that drives this controller. Must contain 'Fly', 'Look' and 'TakeOff' actions.")]
-    private InputActionAsset inputActions;
-
     [SerializeField, Tooltip("Camera that provides the view and flight direction. Auto-filled with the first child Camera if empty.")]
     private Transform cameraTransform;
 
@@ -122,18 +119,6 @@ public class BeeFlightController : MonoBehaviour
         ResolveReferences();
     }
 
-    private void OnEnable()
-    {
-        if (inputActions != null)
-            inputActions.Enable();
-    }
-
-    private void OnDisable()
-    {
-        if (inputActions != null)
-            inputActions.Disable();
-    }
-
     private void Start()
     {
         CaptureInitialLook();
@@ -142,11 +127,9 @@ public class BeeFlightController : MonoBehaviour
 
     private void Update()
     {
-        // 暂停菜单 / 落水救援(InputLocked)时让出控制:HandleCursor 每帧会锁回菜单释放的光标,
-        // 其余输入 / 体力结算本就靠 controlled(光标锁定)门控,timeScale=0 已冻结物理与增量。
+        // 暂停菜单 / 落水救援(InputLocked)时让出控制:输入 / 体力结算靠 controlled(光标锁定)
+        // 门控,timeScale=0 已冻结物理与增量。光标由 PauseMenu(暂停放 / 恢复锁)与 Start(进游玩锁)管理。
         if (PauseMenu.IsPaused || InputLocked) return;
-
-        HandleCursor();
 
         bool controlled = Cursor.lockState == CursorLockMode.Locked && cameraTransform != null;
         if (controlled)
@@ -196,17 +179,6 @@ public class BeeFlightController : MonoBehaviour
         if (cameraTransform == null) return;
 
         cameraTransform.SetPositionAndRotation(transform.position, GetCameraRotation());
-    }
-
-    /// <summary>While Alt is held the cursor is released (control pauses); releasing Alt re-locks it.</summary>
-    private void HandleCursor()
-    {
-        var keyboard = Keyboard.current;
-        if (keyboard == null) return;
-
-        bool altHeld = keyboard.altKey.isPressed || keyboard.rightAltKey.isPressed;
-        Cursor.lockState = altHeld ? CursorLockMode.None : CursorLockMode.Locked;
-        Cursor.visible = altHeld;
     }
 
     private void LockCursor()
@@ -418,7 +390,7 @@ public class BeeFlightController : MonoBehaviour
 
     /// <summary>
     /// Stamina economy: Flying drains it; ONLY Crawling ('趴着') restores it; Falling is neutral
-    /// (体力耗尽后不能在空中回蓝 - 必须落地趴着恢复才能再次起飞). Skipped while the cursor is free (Alt pause).
+    /// (体力耗尽后不能在空中回蓝 - 必须落地趴着恢复才能再次起飞). Skipped while the cursor is free (pause / not in control).
     /// </summary>
     private void UpdateStamina(bool controlled)
     {
@@ -482,19 +454,10 @@ public class BeeFlightController : MonoBehaviour
         if (rb.isKinematic)
             Debug.LogWarning($"{name}: the Rigidbody is kinematic - velocity-based flight will not work. Uncheck 'Is Kinematic'.", this);
 
-        if (inputActions != null)
-        {
-            moveAction = inputActions.FindAction("Fly");
-            lookAction = inputActions.FindAction("Look");
-            takeOffAction = inputActions.FindAction("TakeOff");
-
-            if (moveAction == null || lookAction == null || takeOffAction == null)
-                Debug.LogWarning($"{name}: Input Action asset needs actions named 'Fly', 'Look' and 'TakeOff'.", this);
-        }
-        else
-        {
-            Debug.LogWarning($"{name}: Assign the Input Action asset to the 'Input Actions' field.", this);
-        }
+        // 输入统一走 GameInput:资产缺失 / 缺动作由它报错,动作返回 null → 各处空判按无该输入处理
+        moveAction = GameInput.Fly;
+        lookAction = GameInput.Look;
+        takeOffAction = GameInput.TakeOff;
 
         stamina = maxStamina;
     }
