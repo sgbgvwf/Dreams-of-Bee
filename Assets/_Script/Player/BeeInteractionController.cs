@@ -12,9 +12,11 @@ using UnityEngine.InputSystem;
 ///   - On the 'Interact' press (right mouse), the interaction is dispatched by component kind
 ///     (pickup first): Interactable → pick up the item (its gravity is disabled, its motion
 ///     cleared, and its colliders turned off, and it is forced to hang slightly below the
-///     player, carried rigidly at a fixed body-local offset); pressing again drops it (gravity and colliders
-///     restored, motion cleared). IInteractable → its OnInteract() is called; the concrete
-///     behavior (flipping a lamp switch, opening a door...) is entirely up to the implementer.
+///     player, carried rigidly at a fixed body-local offset); IInteractable → its OnInteract() is called;
+///     the concrete behavior (flipping a lamp switch, opening a door...) is entirely up to the implementer.
+///   - 持物时按下交互键（右键）：先看瞄准目标 —— 瞄到 IInteractable（按式交互物）→ 调用其
+///     OnInteract()，手中物留着（"手里拿的是不是它要的东西"由功能脚本自己判定，柴油机要扳手即走这条）；
+///     瞄到拾取物 / 没瞄到 → 放下手中物（重力与碰撞体恢复，运动清零）。一次只能拿一个物品。
 ///   - 瞄准射线只认"启用中"的交互组件：链上的 IInteractable / Interactable 若已被禁用
 ///     （一次性机关开过后自禁退役，见 SwingSwitch）= 不可交互 —— 不描边、不分发。
 ///   - 拿东西时可以趴着但爬不动：持物接触表面同样进入 Crawling（能停靠、能恢复体力），
@@ -92,10 +94,12 @@ public class BeeInteractionController : MonoBehaviour
 
         if (interactAction.WasPressedThisFrame())
         {
-            if (heldObject != null)
-                DropHeld();
-            else
+            // 持物时：先问瞄准的"按式交互物"要不要这次按键（柴油机要扳手即走这条）；
+            // 它不接管（没瞄到可交互物 / 瞄到的是拾取物）才放下手中物
+            if (heldObject == null)
                 TryInteract();
+            else if (!TryInteractWhileHolding())
+                DropHeld();
         }
     }
 
@@ -196,9 +200,31 @@ public class BeeInteractionController : MonoBehaviour
     }
 
     /// <summary>
-    /// 交互判定与分发（复用每帧瞄准检测的结果，按组件类别行事，拾取优先）：
-    ///  - 持物中不允许任何交互：一次只能拿一个物品，先放下才能拿下一个
-    ///    （Update 的调用路径已保证，这里再加一道防御，防止未来其它路径绕过）
+    /// 持物状态下的按键分发：瞄准目标是"按式交互物"（IInteractable）→ 调用其 OnInteract()，
+    /// 这次按键归它、手中物留着（手里拿的是不是它要的东西由功能脚本自己判定 —— 柴油机要扳手即此路径）；
+    /// 返回 false = 没有交互物接管这次按键，由调用方放下手中物。
+    /// 拾取物（Interactable）不吃持物按键：一次只能拿一个，瞄着拾取物按仍然是放下（放下才能拿下一个）。
+    /// </summary>
+    private bool TryInteractWhileHolding()
+    {
+        if (currentAim == null)
+            return false;   // 未瞄准可交互物
+
+        if (currentAim.GetComponentInParent<Interactable>() != null)
+            return false;   // 拾取物：不接管，交给调用方放下手中物
+
+        var handler = currentAim.GetComponentInParent<IInteractable>();
+        if (handler == null)
+            return false;
+
+        handler.OnInteract();
+        return true;
+    }
+
+    /// <summary>
+    /// 空手交互判定与分发（复用每帧瞄准检测的结果，按组件类别行事，拾取优先）：
+    ///  - 只管空手路径：持物时的分发走 TryInteractWhileHolding（瞄到按式交互物 → 交给它，否则放下）；
+    ///    这里再加一道防御，防止未来其它路径绕过 Update 直接调用
     ///  - 准星未瞄准可交互物 → 直接返回
     ///  - 命中物体有 Interactable → 拾起（拾取物）
     ///  - 否则有 IInteractable → 调用其 OnInteract()，具体行为由功能脚本自行处理
@@ -207,7 +233,7 @@ public class BeeInteractionController : MonoBehaviour
     private void TryInteract()
     {
         if (heldObject != null)
-            return;   // 持物中：不拾取、不触发开关等交互
+            return;   // 持物中：本方法只管空手（持物走 TryInteractWhileHolding），这里防御其它路径绕过
         if (currentAim == null)
             return;   // 未瞄准可交互物
 

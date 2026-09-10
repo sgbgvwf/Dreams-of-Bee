@@ -129,6 +129,14 @@ public sealed class DrawerState
     public bool open;
 }
 
+/// <summary>DieselGenerator 状态(柴油机单向启动:true = 已启动并永久保持,启动即退役;
+/// 恢复 = 瞬间到位 + 按此重写 GeneratorStateSO 跨场景镜像)。</summary>
+[Serializable]
+public sealed class GeneratorState
+{
+    public bool started;
+}
+
 /// <summary>玩家状态快照(存档瞬间;恢复时直接喂给 BeeFlightController / BeeInteractionController)。</summary>
 [Serializable]
 public sealed class PlayerSnapshot

@@ -33,7 +33,7 @@ public class CardReader : MonoBehaviour
     [SerializeField, Tooltip("可选：每次成功刷卡在两种预设色间切换一次的 LightColorAlternator（灯初态 = 色 A，第一次刷卡切到色 B；重刷继续交替），留空自动从门的子物体查找")]
     private LightColorAlternator successLight;
 
-    [SerializeField, Tooltip("可选：要求的钥匙身份 Id（非空时只接受 KeyId 与之相同的钥匙）。同一关多扇门分流用；留空 = 只按关卡归属放行")]
+    [SerializeField, Tooltip("可选：要求的钥匙身份 Id（非空时只接受 KeyId 与之相同的钥匙）。同一关多扇门分流用；留空 = 进触发区的钥匙都放行")]
     private string requiredItemId = "";
 
     private bool warnedMissingDoor;

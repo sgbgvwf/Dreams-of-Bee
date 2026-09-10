@@ -35,13 +35,15 @@ public class LevelAnchor : MonoBehaviour
     public enum AnchorType { Entry, Exit }
 
     /// <summary>刷卡钥匙携带的出口去向(None = 未配置 —— 刷出口门直接报错拒绝,强制显式配置)。
-    /// 本枚举定义在此处供卡片(Card)复用;LinearNext = 关卡列表线性下一关。</summary>
+    /// 本枚举定义在此处供卡片(Card)复用。关卡图非线性:没有"关卡列表下一关"这种默认去向,
+    /// 一律显式 —— Scene = 拖目标关卡,Ending = 填结局 id。</summary>
     public enum DestinationKind
     {
-        None,
-        LinearNext,
-        Scene,
-        Ending,
+        None = 0,
+        // 1 是空号:曾经的 LinearNext("关卡列表线性下一关")随非线性关卡图删除。
+        // 数值显式赋值 + 留空号 = 场景 / 预制体里已序列化的 Scene(2) / Ending(3) 原样有效,无需改数据。
+        Scene = 2,
+        Ending = 3,
     }
 
     [SerializeField, Tooltip("锚点类型：Entry=入口（传送门位姿基准），Exit=出口")]

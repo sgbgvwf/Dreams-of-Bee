@@ -50,9 +50,6 @@ public class SlidingDoor : MonoBehaviour, ISceneSaveable
     [Range(0.05f, 0.3f)]
     private float holdProgress = 0.12f;
 
-    [SerializeField, Tooltip("所属关卡索引（与 LevelTransitionManager 关卡列表一致；-1=不校验）。关卡切换系统用它校验出口门归属，防止出口锚点误配别的关的门（钥匙已无归属关卡概念，刷卡去哪由卡上目的地决定）")]
-    private int levelIndex = -1;
-
     // --- Lock / hold state (driven by LevelTransitionManager) ---
     private bool locked;        // 锁：只阻止"开门"，不阻止"关门"
     private bool holdOpen;      // 近关夹持：开门途中钳制在 holdProgress
@@ -106,9 +103,6 @@ public class SlidingDoor : MonoBehaviour, ISceneSaveable
 
     /// <summary>门是否处于锁定状态。</summary>
     public bool IsLocked => locked;
-
-    /// <summary>所属关卡索引（-1 = 未配置，不校验）。</summary>
-    public int LevelIndex => levelIndex;
 
     /// <summary>
     /// 设置锁定：上锁后忽略一切开门请求（关门始终允许）。

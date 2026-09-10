@@ -11,11 +11,14 @@ using UnityEditor;
 /// 流程(主菜单 / 读档 / 结局)由 GameFlowManager 编排,本类只负责"把某关跑起来"与关间过渡:
 ///
 /// 关卡模型(单向推进,出口数据驱动 —— 新增关卡的作者指南见文件尾):
-///   - 关卡注册表 = Inspector 的 levels 列表(顺序即线性默认序),失效时从 Build Settings 推导
-///     (自动跳过本场景 / 玩家场景 / 菜单背景 Room_00);
-///   - 每道出口门(出口锚点 LevelAnchor,一个场景可有多道)各自声明目的地:
-///     LinearNext(列表下一关,默认)/ Scene(任意关卡) / Ending(结局);
-///   - 当前关身份 = 场景路径(存档 / 读档的事实来源),currentLevelIndex 只是线性序数(展示 / 默认序用)。
+///   - 关卡图是非线性的(分支 / 回环都可以):任何一关都可以是任何一关的前一站,关卡之间没有
+///     "默认下一关"这种东西 —— 去哪只由刷卡的那张卡说了算;
+///   - 关卡注册表 = Inspector 的 levels 列表(只是"有哪些关"的登记 + 直达序数,不代表推进顺序),
+///     失效时从 Build Settings 推导(自动跳过本场景 / 玩家场景 / 菜单背景 Room_00);
+///   - 每道出口门(出口锚点 LevelAnchor,一个场景可有多道)的去向由刷卡钥匙(卡片)携带:
+///     Scene(显式指定目标关卡) / Ending(结局)。卡没配/配了缺目标 → 报错拒绝,没有兜底去向;
+///   - 当前关身份 = 场景路径(存档 / 读档的事实来源),currentLevelIndex 只是注册表序数(展示用)。
+///     出口门不持有任何关卡标注 —— 门洞预制体自包含,实例摆在哪个场景就属于哪一关(见 ResolveExitsForCurrentLevel)。
 ///
 /// 运行生命周期(由 GameFlowManager 驱动):
 ///   - BeginRun(i)   : 开局(菜单→新游戏):并行加载玩家场景 + 第 i 关,锁好出口门后 Settled;
@@ -52,12 +55,14 @@ using UnityEditor;
 /// 防异常：防重复加载（loadState / busyActive）、防重复卸载/结算（unloading / passFinalized）、
 /// 卸载期间刷卡挂起（pendingPortal 续传）、恢复/过渡期拒绝刷卡、最后一关无出口空值安全。Play Mode only。
 ///
-/// 新增一关(单向关卡图)全流程:
-///   1) 新建场景并摆内容; 2) 加入 Build Settings 并拖进本管理器 Inspector 的 Levels 列表(顺序=线性默认序);
-///   3) 场景入口门洞放 Entry 锚点; 4) 出口门洞放 Exit 锚点(挂 SlidingDoor 门引用 + PortalDoor);
-///   5) 出口门 SlidingDoor.LevelIndex = 该关在列表的序号(门归属校验,防锚点误配别的关的门);
-///   6) 每张出口卡配好目的地(Card 组件:LinearNext/Scene/Ending),刷卡通过 → 去卡上目的地;
-///      换卡重刷 = 关门换目标。核心零改动。
+/// 新增一关(非线性关卡图)全流程:
+///   1) 新建场景并摆内容; 2) 加入 Build Settings 并拖进本管理器 Inspector 的 Levels 列表(登记在册,
+///      顺序只影响直达序数 / 展示); 3) 场景入口门洞放 Entry 锚点; 4) 出口门洞放 Exit 锚点(挂
+///      SlidingDoor 门引用 + PortalDoor);
+///   5) 出口门不需要任何关卡标注 —— 门洞预制体(移动门)自包含:锚点引用同一实例里的门,复制实例到
+///      新关引用自动跟着走(管理器解析出口时只要求门活在本关场景里,挡"拖成预制体资产"这类误配);
+///   6) 每张出口卡配好目的地(Card 组件:Scene 拖目标关卡 / Ending 填结局 id),刷卡通过 → 去卡上
+///      目的地;换卡重刷 = 关门换目标。核心零改动。
 ///   (可选)开局 / 直达的落点:关卡开局位置摆一个 PlayerSpawnPoint 出生点 —— 有标记时
 ///   BeginRun / 带落点的 RequestDirectSwitch 把玩家放到那,没标记时保持旧行为(原位),不摆也能跑。
 /// </summary>
@@ -65,7 +70,7 @@ public class LevelTransitionManager : MonoBehaviour
 {
     public static LevelTransitionManager Instance { get; private set; }
 
-    /// <summary>当前关卡在线性列表中的序数（-1 = 当前关不在列表，如分支目的地；展示 / 默认序用）。</summary>
+    /// <summary>当前关卡在注册表中的序数（-1 = 当前关不在注册表，如分支目的地；展示 / 直达序数用）。</summary>
     public int CurrentLevelIndex => currentLevelIndex;
 
     /// <summary>当前关卡场景路径（存档 / 读档的唯一事实来源；空 = 无当前关卡）。</summary>
@@ -74,14 +79,14 @@ public class LevelTransitionManager : MonoBehaviour
     /// <summary>当前关卡场景（SaveSystem 采集场景物件状态用）。</summary>
     public Scene CurrentLevelScene => currentScene;
 
-    /// <summary>关卡注册表长度（Inspector levels 列表序；场景组件 / UI / 内容读取用）。</summary>
+    /// <summary>关卡注册表长度（Inspector levels 登记序；场景组件 / UI / 内容读取用）。</summary>
     public int LevelCount => levelPaths != null ? levelPaths.Length : 0;
 
     /// <summary>关卡注册表第 index 关的场景路径（越界返回空串）。</summary>
     public string GetLevelPath(int index) =>
         levelPaths != null && index >= 0 && index < levelPaths.Length ? levelPaths[index] : "";
 
-    /// <summary>场景路径在关卡注册表中的序数（不在列表 = -1，如分支目的地）。</summary>
+    /// <summary>场景路径在关卡注册表中的序数（不在注册表 = -1，如分支目的地）。</summary>
     public int IndexOfLevel(string path) => IndexOfPath(path);
 
     /// <summary>玩家场景是否已加载（常驻玩法场景，可随局卸载重载）。</summary>
@@ -128,7 +133,7 @@ public class LevelTransitionManager : MonoBehaviour
     }
 
 #if UNITY_EDITOR
-    [SerializeField, Tooltip("关卡列表：Inspector 按顺序拖入（不含 Persistance 启动场景与 Room_00 背景）")]
+    [SerializeField, Tooltip("关卡注册表：本游戏用到的全部关卡，Inspector 按顺序拖入（不含 Persistance 启动场景与 Room_00 背景）。顺序只决定直达序数（选关 / GoToLevel / 开局起点），不是推进顺序 —— 非线性关卡图里\"下一关是哪一关\"由刷卡那张卡的目的地决定。")]
     private SceneAsset[] levels;
 #endif
 
@@ -153,7 +158,7 @@ public class LevelTransitionManager : MonoBehaviour
     // --- 状态 ---
     private enum LoadState { Idle, Loading, Done }              // 加载状态
 
-    private int currentLevelIndex = -1;         // 当前关在线性列表的序数（-1 = 不在列表）
+    private int currentLevelIndex = -1;         // 当前关在注册表里的序数（-1 = 不在注册表，如分支目的地）
     private LoadState loadState = LoadState.Idle;       // 加载状态
     private bool unloading;                     // 是否正在卸载（防重复卸载；卸载期间刷卡 → 挂起）
     private bool passFinalized;                 // 本次过渡是否已结算（防重复结算）
@@ -266,7 +271,7 @@ public class LevelTransitionManager : MonoBehaviour
 
     // ==================== 运行生命周期（GameFlowManager 驱动） ====================
 
-    /// <summary>开局：加载玩家场景 + 线性第 startLevelIndex 关，锁好出口后进入稳定点。</summary>
+    /// <summary>开局：加载玩家场景 + 注册表第 startLevelIndex 关（新游戏 / 读档的起点），锁好出口后进入稳定点。</summary>
     public bool BeginRun(int startLevelIndex)
     {
         if (busyActive)
@@ -446,17 +451,18 @@ public class LevelTransitionManager : MonoBehaviour
     private void ResolveExitsForCurrentLevel()
     {
         exitPortals.Clear();
-        int linearIndex = IndexOfPath(currentScene.path);
 
         foreach (var anchor in LevelAnchor.FindAllAnchors(currentScene, LevelAnchor.AnchorType.Exit))
         {
             var door = anchor.ResolveExitDoor();
 
-            // 关卡识别：出口门必须声明它属于本关（防止误配）。仅当门与当前关都在线性列表内时校验
-            // —— 分支目的地关不在列表（序数 -1）时跳过校验，钥匙归属由读卡器侧按门校验。
-            if (door != null && door.LevelIndex >= 0 && linearIndex >= 0 && door.LevelIndex != linearIndex)
+            // 本地性断言：门必须是"活在本关场景里"的实例。关卡图非线性，门不属于"第几关"这种
+            // 序号概念 —— 门洞预制体（移动门）自包含，实例摆在哪个场景就属于哪一关，所以这里只问
+            // "门自己活在哪个场景"。挡住的是把门字段拖成预制体资产（Project 窗口里的资产，不是场景
+            // 实例）这类误配：那种情况下门永远不动且不报错，最难查。
+            if (door != null && door.gameObject.scene != currentScene)
             {
-                Debug.LogError($"[LevelTransitionManager] {currentScene.name} 的出口门归属关卡({door.LevelIndex})与本关线性序({linearIndex})不符，忽略该门", this);
+                Debug.LogError($"[LevelTransitionManager] {currentScene.name} 的出口锚点 {anchor.name} 引用的门 {door.name} 不在本关场景（多半是拖成了预制体资产），忽略该门", this);
                 door = null;
             }
 
@@ -628,18 +634,6 @@ public class LevelTransitionManager : MonoBehaviour
         passFinalized = false;                  // 新一轮过渡：重置上次过渡的结算状态
         nextScene = default;
 
-        bool noLinearNext = currentLevelIndex < 0 || currentLevelIndex + 1 >= levelPaths.Length;
-        if (dest.kind == LevelAnchor.DestinationKind.LinearNext && noLinearNext)
-        {
-            // 线性序列的最后一关(或当前关不在列表):这张卡想去"列表下一关"但没有下一关。
-            // 直接解锁开门(可作关卡终点门);稳定点保持,这道门已被消费不会二次触发。
-            Debug.Log($"[LevelTransitionManager] 已是线性最后一关(序数 {currentLevelIndex})，没有下一关可加载；如需去往其他关/结局，请把这张卡的 Destination 配成 Scene/Ending");
-            loadState = LoadState.Done;
-            portal.door.SetLocked(false);
-            portal.door.OpenDoor();
-            return;
-        }
-
         if (dest.kind == LevelAnchor.DestinationKind.Ending)
         {
             // 结局门：不加载关卡，通知流程进入结局（流程负责淡出 / 收局 / Room_00 演出）。
@@ -649,9 +643,9 @@ public class LevelTransitionManager : MonoBehaviour
             return;
         }
 
-        string destPath = dest.kind == LevelAnchor.DestinationKind.Scene
-            ? dest.scenePath
-            : levelPaths[currentLevelIndex + 1];
+        // 加载型目的地只剩 Scene(卡上显式指定的目标场景;没配目标的卡在 TryResolveCardDestination
+        // 已被拒绝)。非线性关卡图没有"默认下一关"可退,这条路径必须显式。
+        string destPath = dest.scenePath;
 
         if (string.IsNullOrEmpty(destPath))
         {
@@ -661,8 +655,9 @@ public class LevelTransitionManager : MonoBehaviour
         }
         if (destPath == currentScene.path)
         {
-            // 单向约束：目标是本关自身视为误配（框架不做回访 / 重入）
-            Debug.LogError($"[LevelTransitionManager] 刷卡目的地与本关相同，单向框架禁止回访，刷卡无效", this);
+            // 自环 = 误配：目标就是本关。当前关已在场景里加载着，再加载一次会得到重复的关卡实例。
+            // （关卡图可以有回环 —— A→B→A 合法，因为 A 在前一站已被卸载；这里挡的只是"去自己"。）
+            Debug.LogError($"[LevelTransitionManager] 刷卡目的地与本关相同（自环），刷卡无效", this);
             transitionTriggered = false;
             return;
         }
@@ -789,7 +784,7 @@ public class LevelTransitionManager : MonoBehaviour
         // 旧关信息留给卸载使用
         prevScene = currentScene;
 
-        // 切到新关卡（身份 = 场景路径；线性序数随路径反查）
+        // 切到新关卡（身份 = 场景路径；注册表序数随路径反查）
         currentScene = nextScene;
         currentLevelIndex = IndexOfPath(nextScene.path);
         nextScene = default;
@@ -841,7 +836,7 @@ public class LevelTransitionManager : MonoBehaviour
     // ==================== 通用请求区：无门直达（RequestDirectSwitch） ====================
 
     /// <summary>
-    /// 直达换场景（无门演出;线性直达 / 选关 / 调试 / 彩蛋传送用）：
+    /// 直达换场景（无门演出;选关 / 调试 / 彩蛋传送用）：
     /// 只做"装卸关卡场景 + 切活动场景 + 新关出口预锁",不碰钥匙与传送门。
     /// 玩家场景不动;玩家位移由 landing 决定:本签名 = 玩家原地不动(旧语义,原样保留),
     /// 需要落点请用带 PlayerLanding 的重载(落到目标关默认出生点)。
@@ -884,7 +879,7 @@ public class LevelTransitionManager : MonoBehaviour
         }
         if (scenePath == currentScene.path)
         {
-            Debug.LogWarning("[LevelTransitionManager] 直达请求被拒：目标与当前关相同（单向框架禁止回访）", this);
+            Debug.LogWarning("[LevelTransitionManager] 直达请求被拒：目标与当前关相同（自环）", this);
             return false;
         }
         if (IndexOfPath(scenePath) < 0)
@@ -934,7 +929,7 @@ public class LevelTransitionManager : MonoBehaviour
 
     // ==================== 通用：加载一个关卡 ====================
 
-    /// <summary>按线性序加载关卡（开局用；序数写入 currentLevelIndex 并设活动场景）。</summary>
+    /// <summary>按注册表序加载关卡（开局用；序数写入 currentLevelIndex 并设活动场景）。</summary>
     private IEnumerator LoadLevelByIndexCoroutine(int index)
     {
         if (index < 0 || index >= levelPaths.Length) yield break;
@@ -959,7 +954,7 @@ public class LevelTransitionManager : MonoBehaviour
         SceneManager.SetActiveScene(currentScene);
     }
 
-    /// <summary>场景路径在线性列表中的序数（不在列表 = -1，如分支目的地 / 旧存档指向已移除的关）。</summary>
+    /// <summary>场景路径在注册表中的序数（不在注册表 = -1，如分支目的地 / 旧存档指向已移除的关）。</summary>
     private int IndexOfPath(string path)
     {
         if (levelPaths != null)

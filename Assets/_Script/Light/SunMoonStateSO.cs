@@ -27,6 +27,9 @@ public class SunMoonStateSO : ScriptableObject
     [SerializeField, Range(0f, 1f), Tooltip("月亮当前亮度百分比（0 = 全灭，1 = 全亮）。")]
     private float moonBrightness;
 
+    [SerializeField, Tooltip("是否已被写过至少一次。消费方首次写入前必须忽略读数 —— 此时 0/0 是资产默认值，不是“两方全灭”。")]
+    private bool hasData;
+
     // === 只读访问 ===
     /// <summary>太阳当前亮度百分比（0..1）。</summary>
     public float SunBrightness => sunBrightness;
@@ -34,11 +37,15 @@ public class SunMoonStateSO : ScriptableObject
     /// <summary>月亮当前亮度百分比（0..1）。</summary>
     public float MoonBrightness => moonBrightness;
 
+    /// <summary>是否已有有效读数。false 时 SunBrightness / MoonBrightness 无意义，消费方应跳过。</summary>
+    public bool HasData => hasData;
+
     /// <summary>写镜像（唯一写方：SunMoonCycle）。</summary>
     public void Push(float sun, float moon)
     {
         sunBrightness = Mathf.Clamp01(sun);
         moonBrightness = Mathf.Clamp01(moon);
+        hasData = true;
     }
 
     // === 静态访问 ===

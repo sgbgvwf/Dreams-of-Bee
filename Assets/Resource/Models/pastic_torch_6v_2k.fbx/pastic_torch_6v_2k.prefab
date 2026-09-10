@@ -51,7 +51,7 @@ Light:
   m_InnerSpotAngle: 5
   m_CookieSize: 10
   m_Shadows:
-    m_Type: 0
+    m_Type: 1
     m_Resolution: -1
     m_CustomResolution: -1
     m_Strength: 1
@@ -230,6 +230,7 @@ GameObject:
   - component: {fileID: 7739991824990905086}
   - component: {fileID: 3179888375777599406}
   - component: {fileID: 5200059338021478807}
+  - component: {fileID: 5117100073419223643}
   m_Layer: 0
   m_Name: pastic_torch_6v_2k
   m_TagString: Untagged
@@ -247,7 +248,7 @@ Transform:
   serializedVersion: 2
   m_LocalRotation: {x: -0.7071068, y: -0, z: -0, w: 0.7071068}
   m_LocalPosition: {x: 0, y: 0, z: 0}
-  m_LocalScale: {x: 1000, y: 1000, z: 1000}
+  m_LocalScale: {x: 400, y: 400, z: 400}
   m_ConstrainProportionsScale: 1
   m_Children:
   - {fileID: 2339711646116423237}
@@ -328,7 +329,7 @@ Rigidbody:
   m_ImplicitTensor: 1
   m_UseGravity: 1
   m_IsKinematic: 0
-  m_Interpolate: 0
+  m_Interpolate: 1
   m_Constraints: 0
   m_CollisionDetection: 0
 --- !u!136 &5200059338021478807
@@ -354,6 +355,21 @@ CapsuleCollider:
   m_Height: 0.002542181
   m_Direction: 1
   m_Center: {x: -0.0000020732405, y: -0.0001666346, z: 0.000004733157}
+--- !u!114 &5117100073419223643
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 7326508887416106352}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 99193c21f4ad7be4caad15305edb95bd, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  type: 0
+  carryRotationOffset: {x: -0.70710677, y: 0, z: 0, w: 0.70710677}
+  itemId: 
 --- !u!1 &7607285057327732304
 GameObject:
   m_ObjectHideFlags: 0

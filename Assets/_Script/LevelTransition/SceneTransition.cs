@@ -43,8 +43,10 @@ public class SceneTransition : MonoBehaviour
     }
 
     /// <summary>
-    /// 直达线性下一关(无门演出;跳过当前关的刷卡钥匙流程)。
-    /// 不存在下一关(最后一关 / 当前关不在列表)或非稳定点会被 Manager 拒绝并留日志。
+    /// 直达关卡注册表里当前关的下一项(无门演出;跳过当前关的刷卡钥匙流程)。
+    /// 注意:关卡图是非线性的,注册表顺序**不是**推进顺序 —— 本方法只是调试 / 演示用的
+    /// "按登记顺序走一遍",正式推进一律走刷卡门(去哪由卡上目的地决定)。
+    /// 没有下一项(已是列表最后一项 / 当前关不在列表)或非稳定点会被 Manager 拒绝并留日志。
     /// 落点由 landAtTargetSpawn 决定(默认:目标关出生点)。
     /// </summary>
     public void GoToNextLevel()
@@ -58,7 +60,7 @@ public class SceneTransition : MonoBehaviour
         int next = ltm.CurrentLevelIndex + 1;
         if (next < 0 || next >= ltm.LevelCount)
         {
-            Debug.LogWarning($"[SceneTransition] {name}: 当前关(序数 {ltm.CurrentLevelIndex})没有线性下一关，忽略 GoToNextLevel", this);
+            Debug.LogWarning($"[SceneTransition] {name}: 当前关(序数 {ltm.CurrentLevelIndex})没有注册表下一项，忽略 GoToNextLevel", this);
             return;
         }
         ltm.RequestDirectSwitch(ltm.GetLevelPath(next), DirectLanding);

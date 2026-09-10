@@ -11,11 +11,11 @@ using UnityEditor;
 /// 从卡读取并加载对应场景。同一扇出口门,刷不同卡 = 去不同地方(最近一次刷卡生效)。
 ///
 /// 目的地配置(必填,刷出口门时):选中卡 → 本组件填 Destination Kind ——
-///   LinearNext = 关卡列表线性下一关;
 ///   Scene = 下方拖目标关卡场景(须已加入 Build Settings);
 ///   Ending = 下方填结局 id(见 EndingCatalog);
 ///   不配(None)/配了缺目标 → 刷出口门时报错拒绝 —— 这是刻意的:目的地只认卡,
-///   每张会刷出口门的卡都必须显式声明去向。刷普通门(非出口)时用不到目的地,可留空。
+///   每张会刷出口门的卡都必须显式声明去向(关卡图非线性,没有"列表下一关"这种默认值)。
+///   刷普通门(非出口)时用不到目的地,可留空。
 ///
 /// 其余行为(拾取/触发/身份)不变:Card extends Interactable(Pickup);
 /// 身份 = KeyId(Interactable.itemId),读卡器 requiredItemId 可选配对;
@@ -24,7 +24,7 @@ using UnityEditor;
 public class Card : Interactable, IDoorKey
 {
     [Header("出口目的地(刷出口门时必配)")]
-    [SerializeField, Tooltip("刷卡后去哪:LinearNext=关卡列表线性下一关;Scene=下方指定场景;Ending=触发结局(填结局 id)。None(默认)= 未配置,刷出口门会报错拒绝 —— 目的地唯一权威是卡,没有兜底。")]
+    [SerializeField, Tooltip("刷卡后去哪:Scene=下方指定目标关卡;Ending=触发结局(填结局 id)。None(默认)= 未配置,刷出口门会报错拒绝 —— 目的地唯一权威是卡,没有兜底(关卡图非线性,没有‘列表下一关’可默认)。")]
     private LevelAnchor.DestinationKind destinationKind = LevelAnchor.DestinationKind.None;
 
 #if UNITY_EDITOR
@@ -56,7 +56,7 @@ public class Card : Interactable, IDoorKey
         get
         {
             if (destinationKind == LevelAnchor.DestinationKind.None)
-                return $"[Card] {name}: 没有配置目的地（Destination Kind = None）—— 刷出口门需要它。请在 Card 上配置 Destination Kind(LinearNext/Scene/Ending)";
+                return $"[Card] {name}: 没有配置目的地（Destination Kind = None）—— 刷出口门需要它。请在 Card 上配置 Destination Kind(Scene=拖目标关卡 / Ending=填结局 id)";
             if (destinationKind == LevelAnchor.DestinationKind.Scene && string.IsNullOrEmpty(destinationScenePath))
                 return $"[Card] {name}: Destination Kind = Scene 但没有拖目标场景 —— 请在 Card 上把目标关卡拖进 Destination Scene";
             if (destinationKind == LevelAnchor.DestinationKind.Ending && string.IsNullOrEmpty(destinationEndingId))

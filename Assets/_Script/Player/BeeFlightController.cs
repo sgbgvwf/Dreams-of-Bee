@@ -1,4 +1,3 @@
-using System;
 using UnityEngine;
 using UnityEngine.InputSystem;
 using UnityEngine.Serialization;
@@ -94,7 +93,7 @@ public class BeeFlightController : MonoBehaviour
     // --- State (re-derived every FixedUpdate) ---
     private BeeState state = BeeState.Falling;
 
-    // --- Public API for future UI sync ---
+    // --- Public API（只读:体力条 HUD 轮询、存档 / 状态镜像采集） ---
     public float Stamina => stamina;
     public float MaxStamina => maxStamina;
     public float StaminaNormalized => maxStamina > 0f ? stamina / maxStamina : 0f;
@@ -103,12 +102,6 @@ public class BeeFlightController : MonoBehaviour
     /// <summary>落水救援 / 未来剧情接管期间锁定玩家输入:不响应移动(爬行 / 起飞)与视角。
     /// 只锁输入不冻结世界 —— 时间与物理照常流动,蜜蜂会悬停或趴在表面;接管方负责结束时复位。</summary>
     public bool InputLocked { get; set; }
-
-    /// <summary>Fired whenever stamina changes by more than 0.001 (param = current stamina).</summary>
-    public event Action<float> StaminaChanged;
-    /// <summary>Fired whenever the bee switches between Crawling/Flying/Falling.</summary>
-    public event Action<BeeState> StateChanged;
-    // TODO(UI): 体力 UI 尚未实现，后续用 Stamina/MaxStamina/StaminaNormalized 轮询或订阅上述事件同步。
 
     // --- 爬行脚步计时(音效:每步广播一次 GameEvents.CrawlStep) ---
     private float stepTimer;
@@ -160,7 +153,6 @@ public class BeeFlightController : MonoBehaviour
         {
             var prev = state;
             state = next;
-            StateChanged?.Invoke(state);
             GameEvents.BeeStateChanged?.Invoke(prev, next);   // 注册式音效同步点(起飞/落地/坠地 + 落风循环)
         }
 
@@ -237,7 +229,6 @@ public class BeeFlightController : MonoBehaviour
         pitch = -Mathf.Asin(Mathf.Clamp(fwd.y, -1f, 1f)) * Mathf.Rad2Deg;
 
         stamina = Mathf.Clamp(s.stamina, 0f, maxStamina);
-        StaminaChanged?.Invoke(stamina);   // HUD 立即同步一次,不等下一次体力结算
 
         // 传送 / 恢复都不触发 OnCollisionExit:清陈旧接触,下一物理步按新场景重新推导
         hasContact = false;
@@ -396,14 +387,11 @@ public class BeeFlightController : MonoBehaviour
     {
         if (!controlled) return;
 
-        float before = stamina;
         if (state == BeeState.Flying)
             stamina = Mathf.Max(0f, stamina - flyStaminaDrainPerSecond * Time.deltaTime);
         else if (state == BeeState.Crawling)
             stamina = Mathf.Min(maxStamina, stamina + staminaRegenPerSecond * Time.deltaTime);
         // Falling: 既不消耗也不恢复
-        if (Mathf.Abs(stamina - before) > 0.001f)
-            StaminaChanged?.Invoke(stamina);
     }
 
     /// <summary>

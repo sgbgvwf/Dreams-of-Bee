@@ -5,23 +5,31 @@ using UnityEngine.Rendering.HighDefinition;
 /// 昼夜天体循环（功能脚本）：让 Sun / Moon 两个天体按固定节奏自动交替 ——
 /// 一方全亮时另一方全灭，升落过程平滑过渡，无限循环。
 ///
-/// 每个瞬间产出一对归一化亮度百分比（0..1，此消彼长、和恒为 1），同时驱动三样东西：
-///   1. 光源强度   = Awake 基线的光强 × 百分比（HDRP HDAdditionalLightData.intensity）
-///   2. 球体自发光 = Awake 基线的 _EmissiveColor × 百分比（HDRP/Lit；只缩放强度，色相不变）
-///   3. 球体可见性 = Renderer.enabled（百分比为 0 时隐藏，避免熄灭的天体被别的光照成白球）
+/// 进 Play 就跑，没有任何门控 —— 昼夜交替与柴油机无关。（与柴油机有关联的是 MeltGlass
+/// 那栋玻璃的材质与碰撞体，那由 SunMoonDarknessDriver 门控，不在本脚本。）
+///
+/// 每个瞬间产出一对归一化亮度百分比（0..1，此消彼长、和恒为 1），同时驱动：
+///   1. 子物体光源的强度 —— 两套数值都按【各自】的 Awake 基线缩放：
+///        HDAdditionalLightData.intensity  HDRP 实际渲染用的
+///        Light.intensity                  组件面板上看到的那个数字
+///      两者在场景里本来就不相等（同一盏灯各存一份），所以各自记基线、各自缩，互不干扰。
+///      只写前者的话画面会变但面板数字纹丝不动，只写后者则面板动而画面不动。
+///   2. 球体自发光 = Awake 基线 × 百分比（HDRP/Lit 的 _EmissiveColor；只缩放强度，色相不变）
 /// 基线在 Awake 捕获一次，所以场景里光强 / 材质怎么摆，脚本就按比例把它缩到 0。
 /// 颜色本身从不改写，只按百分比整体缩放 —— 与项目里灯面 _Light 的约定一致。
-/// 亮度百分比同时写入 SunMoonStateSO 镜像，供雾效 / 后处理 / UI 等别的系统轮询。
+/// 亮度百分比同时写入 SunMoonStateSO 镜像，供材质驱动 / 雾效 / 后处理 / UI 等消费方轮询。
+///
+/// 本脚本【刻意不隐藏球体】：两个天体永远保持可见，变暗的只是它们的光源与自发光。
+/// 【也不管碰撞体】：天体的碰撞体留在场景里不管，MeltGlass 的碰撞体由
+/// SunMoonDarknessDriver 按暗区开关。
 ///
 /// 挂哪：场景里一个常驻物体（脚本自身不发光，挂 Room 根或空物体都行）。
-///   建议不要挂在 Sun / Moon 自己身上 —— 本脚本是"导演"，不属于任何一方；
-///   挂上去虽然技术上仍能运行（隐藏用的是 Renderer.enabled，不停 GameObject），
-///   但会让"谁控制谁"变得难读，且日后若改成停用物体就会失效。
+///   不建议挂在 Sun / Moon 自己身上 —— 本脚本是"导演"，不属于任何一方。
 /// 绑什么：sunRoot / moonRoot 拖两个天体的根物体（根上带球体渲染器，光源挂自身或子节点）。
 ///   两个都必填，缺一个直接报错拒绝运行，不做自动查找。
 /// 常见坑：
-///   1. 两个天体的 GameObject active 由本脚本接管 —— 进 Play 强制激活，之后靠 Renderer.enabled
-///      按亮度显隐。场景里手关的天体（比如 Sun）进 Play 会被点亮。
+///   1. 两个天体的 GameObject active 由本脚本接管 —— 进 Play 强制激活。场景里手关的
+///      天体（比如 Sun）进 Play 会被点亮，之后不再改 active，也不改 Renderer.enabled。
 ///   2. 天体根上必须有 Renderer，根或子节点上必须有 Light，且渲染器材质必须是 HDRP/Lit
 ///      （要有 _EmissiveColor）—— 任一条不满足直接报错，不做替换 / 降级。
 ///   3. 本脚本独占这两个天体光源的强度与材质自发光，不要再叠加 FlickeringLight /
@@ -47,18 +55,20 @@ public class SunMoonCycle : MonoBehaviour
     private float transitionSeconds = 6f;
 
     [Header("起始")]
-    [SerializeField, Tooltip("进入 Play 时从哪一方开始：勾选 = 先太阳全亮，取消 = 先月亮全亮。")]
+    [SerializeField, Tooltip("循环从哪一方起跑：勾选 = 先太阳全亮，取消 = 先月亮全亮。")]
     private bool startWithSun = true;
 
     [Header("亮度镜像（供别的系统读取）")]
     [SerializeField, Tooltip("亮度百分比写入的镜像资产（Resources/SunMoon/SunMoonStateSO）。留空则退回同名静态 Instance。")]
     private SunMoonStateSO stateMirror;
 
-    // --- 解析出的引用与 Start 基线 ---
+    // --- 解析出的引用与基线（基线在 BeginCycle 那一刻捕获） ---
     private HDAdditionalLightData sunHd, moonHd;
+    private Light sunLight, moonLight;
     private Renderer sunRenderer, moonRenderer;
     private Material sunMaterial, moonMaterial;   // 运行时实例，不污染材质资产
-    private float sunBaseIntensity, moonBaseIntensity;
+    private float sunBaseIntensity, moonBaseIntensity;                 // HDAdditionalLightData 基线（HDRP 实际渲染用）
+    private float sunBaseLightIntensity, moonBaseLightIntensity;       // Light 组件基线（Inspector 里看到的那个）
     private Color sunBaseEmissive, moonBaseEmissive;
 
     // --- 当前亮度百分比（0..1） ---
@@ -66,7 +76,7 @@ public class SunMoonCycle : MonoBehaviour
     private float moonBrightness;
 
     private float elapsed;      // 循环内已走过的秒数
-    private bool ready;         // 引用 / 基线全部就绪才驱动
+    private bool ready;         // 引用全部解析成功才可能工作
     private bool warnedNoMirror;
 
     private static readonly int EmissiveColorId = Shader.PropertyToID("_EmissiveColor");
@@ -82,8 +92,10 @@ public class SunMoonCycle : MonoBehaviour
 
     private void Awake()
     {
-        ready = ResolveAndCapture();
-        elapsed = startWithSun ? 0f : sunHoldSeconds + transitionSeconds;   // 从“月亮全亮”切入
+        ready = ResolveReferences();
+
+        // 解析成功就立刻起跑：接管天体 active、捕获基线、摆到第 0 帧。
+        if (ready) BeginCycle();
     }
 
     private void Update()
@@ -91,6 +103,27 @@ public class SunMoonCycle : MonoBehaviour
         if (!ready) return;
 
         elapsed += Time.deltaTime;
+        EvaluateBrightness();
+        Apply();
+    }
+
+    /// <summary>
+    /// 起跑：接管天体 active、捕获基线、摆到循环起点。
+    /// 基线在【此刻】捕获，所以编辑器里配的光强 / 材质就是被缩放的那个原点。
+    /// 昼夜交替与柴油机无关 —— 没有门控，进 Play 就跑。
+    /// </summary>
+    private void BeginCycle()
+    {
+        // 天体 active 由本脚本接管：进 Play 一律激活，此后不再改 active，也不改 Renderer.enabled
+        // （场景里 Sun 原本是关的，激活后靠它自己的光源与自发光表现昼夜）。
+        if (!sunRoot.activeSelf) sunRoot.SetActive(true);
+        if (!moonRoot.activeSelf) moonRoot.SetActive(true);
+
+        CaptureBaseline();
+        elapsed = startWithSun ? 0f : sunHoldSeconds + transitionSeconds;   // 从“月亮全亮”切入
+
+        // 立刻摆到第 0 帧姿态。否则本帧会先露出编辑器里手配的满亮度（上面刚把两个天体激活，
+        // Sun 原本还是关闭的），等下一帧才被接管 —— 肉眼是一下闪跳。
         EvaluateBrightness();
         Apply();
     }
@@ -127,19 +160,23 @@ public class SunMoonCycle : MonoBehaviour
             sunBrightness = k;
             moonBrightness = 1f - k;
         }
+
     }
 
     private void Apply()
     {
+        // 两套强度都要写：HDAdditionalLightData 是 HDRP 实际渲染用的，
+        // Light.intensity 是组件面板上那个数字 —— 只写前者的话，面板上看不出任何变化。
         sunHd.intensity = sunBaseIntensity * sunBrightness;
         moonHd.intensity = moonBaseIntensity * moonBrightness;
+        sunLight.intensity = sunBaseLightIntensity * sunBrightness;
+        moonLight.intensity = moonBaseLightIntensity * moonBrightness;
 
         sunMaterial.SetColor(EmissiveColorId, ScaleRgb(sunBaseEmissive, sunBrightness));
         moonMaterial.SetColor(EmissiveColorId, ScaleRgb(moonBaseEmissive, moonBrightness));
 
-        // 全灭时隐藏球体：否则不发光的白球会被场景里别的光照亮露馅。
-        sunRenderer.enabled = sunBrightness > 0f;
-        moonRenderer.enabled = moonBrightness > 0f;
+        // 刻意不碰 Renderer.enabled：两个球体【永远保持可见】，变暗的只是它们的光源与自发光。
+        // 球体不隐藏、不消失。（碰撞体也不在这里管 —— 那由 SunMoonDarknessDriver 按暗区开关。）
 
         SunMoonStateSO mirror = Mirror;
         if (mirror != null)
@@ -155,10 +192,11 @@ public class SunMoonCycle : MonoBehaviour
     }
 
     /// <summary>
-    /// 解析两个天体的光源 / 渲染器并捕获基线。任何一项缺失都直接报错返回 false，
+    /// 解析两个天体的光源 / 渲染器，只做校验与存引用 —— 不激活、不写任何状态。
+    /// 真正的动作在 BeginCycle 里。任何一项缺失都直接报错返回 false，
     /// 脚本拒绝运行 —— 不自动查找、不降级。
     /// </summary>
-    private bool ResolveAndCapture()
+    private bool ResolveReferences()
     {
         if (sunRoot == null || moonRoot == null)
         {
@@ -166,10 +204,6 @@ public class SunMoonCycle : MonoBehaviour
                 "请在 Inspector 里把 Sun 和 Moon 的根物体分别拖上。", this);
             return false;
         }
-
-        // 天体 active 由本脚本接管：进 Play 一律激活，显隐交给 Renderer.enabled。
-        if (!sunRoot.activeSelf) sunRoot.SetActive(true);
-        if (!moonRoot.activeSelf) moonRoot.SetActive(true);
 
         sunRenderer = sunRoot.GetComponent<Renderer>();
         moonRenderer = moonRoot.GetComponent<Renderer>();
@@ -181,8 +215,8 @@ public class SunMoonCycle : MonoBehaviour
             return false;
         }
 
-        Light sunLight = sunRoot.GetComponentInChildren<Light>(true);
-        Light moonLight = moonRoot.GetComponentInChildren<Light>(true);
+        sunLight = sunRoot.GetComponentInChildren<Light>(true);
+        moonLight = moonRoot.GetComponentInChildren<Light>(true);
         if (sunLight == null || moonLight == null)
         {
             Debug.LogError($"[SunMoonCycle] {name}: 天体根物体自身或子节点上找不到 Light" +
@@ -198,8 +232,8 @@ public class SunMoonCycle : MonoBehaviour
             return false;
         }
 
-        // 先查共享资产再取运行时实例：避免材质不合格时白造一份副本、也避免
-        // Unity 因 material 访问在编辑器里刷实例化日志。
+        // 这里只查共享资产、不造运行时副本：材质不合格就直接拒绝，别白造一份实例
+        // （真正取 renderer.material 实例化推迟到 BeginCycle 的 CaptureBaseline）。
         Material sunShared = sunRenderer.sharedMaterial;
         Material moonShared = moonRenderer.sharedMaterial;
         if (sunShared == null || moonShared == null ||
@@ -211,20 +245,31 @@ public class SunMoonCycle : MonoBehaviour
             return false;
         }
 
+        return true;
+    }
+
+    /// <summary>
+    /// 进入运行态时捕获一次基线：材质取运行时实例、读光强与自发光的原值、开启光源组件。
+    /// 基线 = "编辑器里配的满亮度"，之后所有驱动都是它的百分比缩放，全程零漂移。
+    /// </summary>
+    private void CaptureBaseline()
+    {
         // 运行时实例：改的是这两个渲染器的副本，不影响共用同一材质资产的其他物体。
         sunMaterial = sunRenderer.material;
         moonMaterial = moonRenderer.material;
 
         sunBaseIntensity = sunHd.intensity;
         moonBaseIntensity = moonHd.intensity;
+        // Light 组件那一份基线单独取：它与 HDAdditionalLightData 是两套数值（场景里两者就不相等），
+        // HDRP 渲染用前者、Inspector 里看到的是后者，两个都要按各自比例缩。
+        sunBaseLightIntensity = sunLight.intensity;
+        moonBaseLightIntensity = moonLight.intensity;
         sunBaseEmissive = sunMaterial.GetColor(EmissiveColorId);
         moonBaseEmissive = moonMaterial.GetColor(EmissiveColorId);
 
         // 强度由本脚本接管，光源组件本身保持开启（亮度 0 时强度为 0，等于不发光）。
         sunLight.enabled = true;
         moonLight.enabled = true;
-
-        return true;
     }
 
     /// <summary>平滑插值 0..1（smoothstep），用于升落过渡。</summary>
