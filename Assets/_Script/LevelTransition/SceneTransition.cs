@@ -15,8 +15,8 @@ using UnityEngine;
 /// 放置指南(每场景保证一个):
 ///   - 每个关卡场景:在场景根建一个空物体挂本组件(建议命名 "Scene Transition"),
 ///     该关 UI(下一关 / 回主菜单 / 选关按钮)的持久 onClick 绑到它的 public 方法;
-///   - 菜单 / 结局场景(Room_00 等):可不挂 —— 其 UI 桥(MainMenuUI / PauseMenu / EndingOverlay)
-///     已提供按钮入口;要放"直达某关"的调试按钮时再挂一个即可;
+///   - 菜单 / 结局场景(Room_00 / Room_Ending 等):可不挂 —— 其 UI 桥(MainMenuUI / PauseMenu /
+///     EndingRoom)已提供入口;要放"直达某关"的调试按钮时再挂一个即可;
 ///   - Persistance:无需挂(它的 UI 就是场景里的 PauseMenu)。
 ///
 /// 空安全:Manager / 流程缺失(开发者直玩、不在对应状态)时方法记录日志并忽略,绝不抛错。

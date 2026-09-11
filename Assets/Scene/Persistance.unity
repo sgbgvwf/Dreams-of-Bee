@@ -335,7 +335,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   overlay: {fileID: 1919347501}
-  holdBlackSeconds: 0.5
+  holdBlackSeconds: 1
 --- !u!1 &413693532
 GameObject:
   m_ObjectHideFlags: 0

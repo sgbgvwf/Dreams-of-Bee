@@ -290,7 +290,13 @@ public class LineLampController : MonoBehaviour
         if (size == lastAppliedSize) return;
         lastAppliedSize = size;
 
+#if UNITY_EDITOR
+        // Editor-only API (it does not exist in a Player build, hence the guard).
+        // It feeds the Light inspector and the scene gizmo; HDRP mirrors
+        // shapeWidth/shapeHeight into it for us via UpdateAllLightValues.
         areaLight.areaSize = size;
+#endif
+
         if (hdData != null)
         {
             hdData.shapeWidth = size.x;

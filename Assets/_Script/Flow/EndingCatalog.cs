@@ -2,33 +2,39 @@ using System;
 using System.Collections.Generic;
 
 /// <summary>
-/// 结局目录(扩展口 B —— 加结局 = 目录里加一条,播放层与流程零改动)。
+/// 结局目录(扩展口 B —— 加结局 = 目录里加一条 + 搭一个结局房间,流程零改动)。
 ///
-/// 每条结局 = EndingDefinition: id(触发用) + 演出文案 + 可选演出背景场景 + 解锁条件。
+/// 每条结局 = EndingDefinition: id(触发用) + 演出场景 + 解锁条件。
+/// 【文案与画面都不在这里】—— 结局在一个专属场景里演(结局房间):玩家被门传送进去、
+/// 什么都看不见(全屏纯色)、不允许交互,字幕在场景里逐条播(见 EndingRoom)。
+/// 本目录只管"有哪些结局、去哪个场景、怎么解锁"。
 /// 触发两条路:
-///   - 内容代码任意时刻调 GameFlowManager.TriggerEnding(id)(典型挂最终关某个 IInteractable);
-///   - 关卡出口门配 LevelAnchor.DestinationKind = Ending + 填本目录的 id(纯 Inspector 配置,零代码)。
-/// 演出:默认不加载场景 —— EndingOverlay 自带纯色幕(注意:Room_00 只做主菜单背景,不担任结局演出地);
-/// 只有定义显式给了 backdropScenePath(专属演出场景)时才加载它。确认离开时自动完成
-/// completedRuns+1 / 结局入 seenEndings / 槽位置"已通关"(见 GameFlowManager.EndingConfirmed)。
+///   - 有出口门配卡:卡上 DestinationKind = Ending + 填本目录的 id(纯 Inspector 配置,零代码)——
+///     整套走普通门的演出(加载结局场景 → 开门 → 玩家穿过门面被传送进去 → 卸载前一关),
+///     详见 LevelTransitionManager.AdvanceTransition;
+///   - 内容代码任意时刻调 GameFlowManager.TriggerEnding(id)(典型挂最终关某个 IInteractable):
+///     无门直达换场景把玩家送进结局房间。
+/// 收尾:结局房间演完 → 回主菜单,并【删掉这一局的活动档】;跨局元数据照记
+/// (completedRuns+1 / 结局入 seenEndings,见 GameFlowManager.ConfirmEnding)。
 ///
 /// 解锁条件(多结局解锁关系):requiresEnding 需要先达成指定结局(跨局 seenEndings 判);
 /// unlockCheck 为可选的附加条件回调(读 SaveSystem 全局/局内 KV 做"达成 A 才解锁 B"等)。
-/// 触发时条件不满足:警告日志 + 拒绝(正常内容不会去触发锁定的结局,这是防误触发的保险)。
+/// 触发时条件不满足:警告日志 + 拒绝(正常内容不会去触发锁定的结局,这是防误触发的保险);
+/// 刷卡路径上更早 —— 卡自己的 DiagnosticHint 在刷卡当场就把未登记的 id 挡下。
 /// </summary>
 public static class EndingCatalog
 {
-    /// <summary>结局文案(含默认演出背景;中文文案内联,作者直接改这里)。</summary>
+    /// <summary>一条结局的登记项(文字与画面在结局房间场景里,不在这)。</summary>
     public sealed class EndingDefinition
     {
         public string id;
-        public string title;
-        public string body;
         /// <summary>
-        /// 演出背景场景路径(空 = 纯色结局幕,默认;非空 = 加载该场景做演出背景,需作者自配相机。
-        /// 注意 Room_00 只做主菜单背景,不要拿它当结局场景)。
+        /// 结局演出场景(结局房间)的路径,必配 —— 玩家会被传送进这个场景里演完结局。
+        /// 要求:场景里的物件全是纯色(玩家什么都看不见)、有 Entry 锚点(落点)与门面渲染相机、
+        /// 挂 EndingRoom 组件;必须已加入 Build Settings。空 = 刷卡当场被拒(见
+        /// LevelTransitionManager.RequestExitKeyedCore)。注意 Room_00 只做主菜单背景,不要拿它当结局房间。
         /// </summary>
-        public string backdropScenePath = "";
+        public string scenePath = "";
         /// <summary>需先达成的结局 id(跨局;空 = 无前置结局)。</summary>
         public string[] requiresEnding;
         /// <summary>附加解锁条件(读 SaveSystem KV / 结局列表;空 = 无条件)。</summary>
@@ -44,18 +50,25 @@ public static class EndingCatalog
     }
 
     /// <summary>
-    /// 作者目录(新结局 = 在这里加一条 Register)。每条先达成的结局会入 meta.seenEndings,
-    /// 二周目内容直接用 SaveSystem.IsEndingUnlocked(id) 查询。
+    /// 作者目录(新结局 = 在这里加一条 Register,同时搭好对应的结局房间场景)。
+    /// 每条先达成的结局会入 meta.seenEndings,二周目内容直接用 SaveSystem.IsEndingUnlocked(id) 查询。
     /// </summary>
     private static void RegisterDefaultEndings()
     {
-        // 示例结局(验证流程用;作者正式结局照此加条目即可)
+        // 结局 1(在结局房间里那一套 stage 上配成纯白)
         Register(new EndingDefinition
         {
-            id = "ending_demo",
-            title = "示例结局 · 归巢",
-            body = "蜂群收拢翅膀,梦境在灯影里合拢。\n\n—— 旅程告一段落,你的故事将被记住。",
-            requiresEnding = null,
+            id = "ending_1",
+            scenePath = "Assets/Scene/Room_Ending.unity",
+            requiresEnding = null,   // 两条结局各自独立可达,没有先后关系
+        });
+
+        // 结局 2(同一个结局房间,那一套 stage 上配成纯黑;要各用各的房间就各填各的 scenePath)
+        Register(new EndingDefinition
+        {
+            id = "ending_2",
+            scenePath = "Assets/Scene/Room_Ending.unity",
+            requiresEnding = null,   // 两条结局各自独立可达,没有先后关系
         });
     }
 

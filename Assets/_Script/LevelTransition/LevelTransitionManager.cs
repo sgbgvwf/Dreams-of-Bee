@@ -36,7 +36,8 @@ using UnityEditor;
 ///   - RequestDirectSwitch(path[, landing]):无门直达换场景(无演出;调试 / 演示 / 选关用;
 ///     可选落点 = 目标关出生点 PlayerSpawnPoint / 保持原位,见 PlayerLanding);
 ///   - 结局 / 主菜单请求跨流程状态与存档收局,归 GameFlowManager(TriggerEnding / QuitToMenu),
-///     刷卡门"结局门"(卡的 Destination = Ending)仍经 EndingRequested 事件交给流程;
+///     结局门(卡的 Destination = Ending)在刷卡那一刻经 EndingRequested 事件交给流程 ——
+///     余下装载与普通门一样(目的地 = 结局目录里配的结局房间);
 ///   - 玩家落点分工:门演出路径的落点由 PortalDoor + 目标关 Entry 锚点负责(相对位姿映射);
 ///     开局 / 直达的落点由本层 PlayerSpawnPoint 机制负责(有标记才传送,缺省保持旧行为)。
 ///     钥匙归属(关卡/身份)归读卡器校验;"刷卡去哪" = 卡上目的地,本层裁决执行。
@@ -48,6 +49,9 @@ using UnityEditor;
 ///      （门打开的瞬间，门面上的门后渲染纹理已实时显示目的地关，玩家看到完整画面的瞬间它已存在）
 ///   T2 玩家穿过门洞 → PortalDoor 把玩家传送到入口门洞（速度 / 朝向同步换算）→ 结算过渡
 ///   T3 结算后立即异步卸载上一关 → 清理资源（门是单向的：前场景已卸载，无法返回）
+///   结局门(卡上 Destination = Ending)走的就是这套原样的时序：目的地 = 结局目录里配的结局房间，
+///   刷卡(T0)时先经 EndingRequested 通知流程切到结局态(挡掉落地那一下的自动存档)，随后照常
+///   加载 / 开门 / 穿门传送 / T3 卸载前一关。结局房间侧没有门，只有入口锚点与门面渲染相机。
 ///
 /// 无缝原理：各关独立摆放在自己的世界坐标，门洞由传送门系统渲染
 /// （PortalDoor 用"相对门的位置与玩家相对门的位置相同"的相机生成门面纹理），
@@ -113,7 +117,10 @@ public class LevelTransitionManager : MonoBehaviour
     /// <summary>进入稳定点时触发（Begin* 完成 / T2+T3 穿越结算完成）。GameFlowManager 借此做"到达自动存档"。</summary>
     public event System.Action Settled;
 
-    /// <summary>结局门（出口目的地 = Ending）被刷卡时触发（载荷：结局 id）。无监听者（开发者直玩等）则只开门不换场。</summary>
+    /// <summary>结局门（卡上目的地 = Ending）在【刷卡那一刻】触发（载荷：结局 id）——
+    /// 不是玩家穿门时：流程要趁早切到结局态，玩家落地那一下的自动存档才会被挡掉
+    /// （见 GameFlowManager.RequestEnding）。无监听者（开发者直玩等）则流程不进结局态，
+    /// 玩家会被照常传送进结局房间 —— 房间侧有兜底（报错 + 回主菜单）。</summary>
     public event System.Action<string> EndingRequested;
 
     // === 一口出口的运行时配置（一个出口锚点 = 一扇门 + 一个可选的传送门） ===
@@ -565,6 +572,8 @@ public class LevelTransitionManager : MonoBehaviour
     /// 目的地并加载（最近一次刷卡生效）。过渡未穿过前再刷另一张卡 = 换目标:
     /// 先关门上锁 → 停/卸已载目标 → 载新目标 → 开门放行。
     /// 门的开/关时机全部由管理器控制（加载完成才开门）。
+    /// 目的地 = Ending 时路径取自结局目录（`EndingCatalog.Find(id).scenePath` = 结局房间），
+    /// 其余与 Scene 完全一样；唯一多出来的一步是刷卡那一刻先通知流程进结局态。
     /// 只允许在稳定点刷卡；恢复 / 卸载期一律拒绝（卸载窗口的刷卡会挂起续传）。
     /// </summary>
     public bool RequestExitKeyed(SlidingDoor swipedDoor) =>
@@ -590,6 +599,23 @@ public class LevelTransitionManager : MonoBehaviour
         // 刷卡瞬间裁决目的地(唯一权威 = 卡;卡没配/配错 → 报错拒绝,不做兜底)
         if (!TryResolveCardDestination(key, out var dest))
             return false;
+
+        // 结局门的两道校验都在刷卡当场做完：问题此刻暴露，玩家才知道这张卡没用。
+        // ("结局存不存在 / 解没解锁"由卡自己的 DiagnosticHint 挡,见 Card.cs)
+        if (dest.kind == LevelAnchor.DestinationKind.Ending)
+        {
+            if (portal.portal == null)
+            {
+                Debug.LogError($"[LevelTransitionManager] {portal.door.name} 是结局门但没有 PortalDoor：玩家穿不过去就进不了结局房间。请在出口锚点上挂 PortalDoor，并在门面 Quad 上配 PortalCrossTrigger。刷卡被拒", this);
+                return false;
+            }
+            var endingDef = EndingCatalog.Find(dest.endingId);
+            if (endingDef == null || string.IsNullOrEmpty(endingDef.scenePath))
+            {
+                Debug.LogError($"[LevelTransitionManager] 结局 [{dest.endingId}] 没有配演出场景（EndingDefinition.scenePath 为空）：结局是在结局房间里演的，没场景就没地方可去。请在 EndingCatalog 里给这条结局填上房间场景路径。刷卡被拒", this);
+                return false;
+            }
+        }
 
         if (transitionTriggered)
         {
@@ -665,18 +691,12 @@ public class LevelTransitionManager : MonoBehaviour
         passFinalized = false;                  // 新一轮过渡：重置上次过渡的结算状态
         nextScene = default;
 
-        if (dest.kind == LevelAnchor.DestinationKind.Ending)
-        {
-            // 结局门：不加载关卡，通知流程进入结局（流程负责淡出 / 收局 / Room_00 演出）。
-            Debug.Log($"[LevelTransitionManager] 结局卡被刷卡：触发结局 [{dest.endingId}]");
-            loadState = LoadState.Done;
-            EndingRequested?.Invoke(dest.endingId);
-            return;
-        }
-
-        // 加载型目的地只剩 Scene(卡上显式指定的目标场景;没配目标的卡在 TryResolveCardDestination
-        // 已被拒绝)。非线性关卡图没有"默认下一关"可退,这条路径必须显式。
-        string destPath = dest.scenePath;
+        // 目的地场景：Scene = 卡上显式指定的目标关卡;Ending = 结局目录里配的结局房间(Room_Ending)。
+        // 两者只差"路径从哪来"—— 装载执行完全一样(加载 → 开门 → 玩家穿过门面被传送 → 卸载前一关)。
+        // 非线性关卡图没有"默认下一关"可退,这条路径必须显式。
+        string destPath = dest.kind == LevelAnchor.DestinationKind.Ending
+            ? EndingCatalog.Find(dest.endingId)?.scenePath
+            : dest.scenePath;
 
         if (string.IsNullOrEmpty(destPath))
         {
@@ -691,6 +711,16 @@ public class LevelTransitionManager : MonoBehaviour
             Debug.LogError($"[LevelTransitionManager] 刷卡目的地与本关相同（自环），刷卡无效", this);
             transitionTriggered = false;
             return;
+        }
+
+        // 结局在刷卡这一刻就算开始(路径与自环都校验过了,这里必定真的会加载):
+        // 流程要在玩家【到达之前】切到结局态 —— 落地那一下的 Settled 自动存档会被状态门挡掉,
+        // 不会把"玩家站在结局房间里"写进档。
+        // 玩家看到的画面:目的地是纯色房间,门面渲染出来就是一片纯色,穿过去还是那片纯色(无缝)。
+        if (dest.kind == LevelAnchor.DestinationKind.Ending)
+        {
+            Debug.Log($"[LevelTransitionManager] 结局门刷卡：进入结局 [{dest.endingId}]，加载演出场景 {destPath}", this);
+            EndingRequested?.Invoke(dest.endingId);
         }
 
         // T0：只启动后台加载。门保持关闭且锁定 —— 加载完成前玩家不可能通过，

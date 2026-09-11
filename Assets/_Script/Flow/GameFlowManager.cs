@@ -27,14 +27,17 @@ public enum FlowState
 /// 场景布局:
 ///   - 主菜单:Persistance 常驻 + 背景场景(Room_00 —— 按文件名从 Build Settings 解析,
 ///     只做主菜单背景)附加加载,配"Menu Camera"(场景无相机时运行时自建);
-///   - 结局:默认不加载任何场景,EndingOverlay 自带纯色幕演出;结局定义可显式指定
-///     backdropScenePath(专属演出场景,需作者自配相机),此时才加载它;
+///   - 结局:在专属的结局房间里演(EndingCatalog 每条结局配一个场景路径)。门路径由那扇结局门
+///     自己装载并把玩家传送进去;无门路径由这里用直达换场景送进去。流程只做两件事 ——
+///     刷卡那一刻切到结局态(挡掉落地那一下的自动存档)、演出结束后回主菜单;
+///     演出本身(换色 / 锁输入 / 字幕 / 变黑)在房间里的 EndingRoom 上;
 ///   - 游玩:卸载背景 → LevelTransitionManager 加载玩家场景 + 关卡;
 ///   - Room_00 永不进关卡列表(见 LevelTransitionManager 的列表兜底排除),也只做主菜单背景,
-///     不会作为结局演出地。
+///     不会作为结局房间。
 ///
 /// 多周目:meta.completedRuns 只在结局确认后 +1;新开局周目号 = completedRuns + 1,
 /// 内容按周目分支直接读 SaveSystem.CurrentPlaythroughNumber / 全局 KV / 结局解锁。
+/// 结局确认时还会删掉这一局的活动档(演完就结束,不留档)。
 ///
 /// 开发者直玩:未从 Persistance 启动(无 LevelTransitionManager)→ State = DevDirectPlay,
 /// 不建菜单 / 结局 UI、不装背景 —— 直接 Play 任意房间的开发体验与改前一致。
@@ -92,13 +95,17 @@ public class GameFlowManager : MonoBehaviour
     /// <summary>读指定槽的档继续(存档系统页按槽读档;空槽请走 StartNewGame)。</summary>
     public static void ContinueGameAtSlot(int slotIndex) => Instance?.RequestContinueSlot(slotIndex);
 
-    /// <summary>触发结局(内容代码任意时刻调用;结局门经 LevelTransitionManager.EndingRequested 走同一入口)。</summary>
-    public static void TriggerEnding(string endingId) => Instance?.RequestEnding(endingId);
+    /// <summary>正在演的结局 id(空 = 没在结局里)。结局房间的演出组件据此知道自己该演哪一场。</summary>
+    public static string CurrentEndingId => Instance != null ? Instance.currentEndingId : "";
+
+    /// <summary>触发结局(内容代码任意时刻调用;结局门经 LevelTransitionManager.EndingRequested 走同一入口)。
+    /// 无门路径会额外把玩家直达送进结局房间(门路径的装载由门自己完成)。</summary>
+    public static void TriggerEnding(string endingId) => Instance?.RequestEnding(endingId, false);
 
     /// <summary>返回主菜单(暂停菜单按钮;含存档 + 收局 + 换背景)。</summary>
     public static void QuitToMenu() => Instance?.RequestQuitToMenu();
 
-    /// <summary>结局幕的"返回主菜单"按下:结算周目 / 结局入库 / 槽位置已通关,然后回主菜单。</summary>
+    /// <summary>结局演出结束(结局房间的 EndingRoom 调):记录周目 / 结局入库,删掉这一局的活动档,回主菜单。</summary>
     public static void EndingConfirmed() => Instance?.ConfirmEnding();
 
     // ==================== 生命周期 ====================
@@ -179,7 +186,8 @@ public class GameFlowManager : MonoBehaviour
             SaveSystem.TickSessionClock(Time.deltaTime);
     }
 
-    /// <summary>菜单 / 结局需要自由光标(点击按钮);游玩时光标由 BeeFlightController 自己锁。</summary>
+    /// <summary>菜单需要自由光标(点击按钮);游玩时光标由 BeeFlightController 自己锁。
+    /// 结局幕是不交互的(字幕播完自动回主菜单),期间保持锁着,回到主菜单这一路自然会放。</summary>
     private static void ReleaseCursor()
     {
         Cursor.lockState = CursorLockMode.None;
@@ -250,7 +258,14 @@ public class GameFlowManager : MonoBehaviour
         StartCoroutine(QuitToMenuRoutine());
     }
 
-    private void RequestEnding(string endingId)
+    /// <summary>
+    /// 进入结局态(同步,不卸载任何东西 —— 演出在结局房间里进行)。
+    /// 门路径:LevelTransitionManager 在刷卡那一刻调,随后门照常加载 / 开门 / 把玩家传送进结局房间;
+    /// 无门路径(内容脚本 / 场景按钮):这里额外用"直达换场景"把玩家也送进结局房间。
+    /// 关键:**结局态在玩家到达之前就切好** —— 落地那一下的 Settled 自动存档会被状态门挡掉,
+    /// 不然会把"玩家站在结局房间里"写进档。
+    /// </summary>
+    private void RequestEnding(string endingId, bool viaDoor)
     {
         if (State != FlowState.InGame)
         {
@@ -268,13 +283,40 @@ public class GameFlowManager : MonoBehaviour
             Debug.LogWarning($"[GameFlow] 结局 {endingId} 尚未解锁（requiresEnding / unlockCheck 未满足），忽略");
             return;
         }
-        StartCoroutine(EndingRoutine(def));
+        if (string.IsNullOrEmpty(def.scenePath))
+        {
+            Debug.LogError($"[GameFlow] 结局 {endingId} 没有配演出场景（EndingDefinition.scenePath 为空）—— 没地方演，忽略");
+            return;
+        }
+
+        // 无门路径:先把玩家真送走,再进结局态。送不走就别进 —— 状态切了人还站在原地的话,
+        // 结局里既不能暂停也不能退出,是个死局。(门路径的装载由那扇门自己做,不用这里管)
+        if (!viaDoor)
+        {
+            var ltm0 = LevelTransitionManager.Instance;
+            if (ltm0 == null || !ltm0.RequestDirectSwitch(def.scenePath, LevelTransitionManager.PlayerLanding.LevelSpawnPoint))
+            {
+                Debug.LogError($"[GameFlow] 结局 {endingId} 被拒：无法直达结局房间 {def.scenePath}（无管理器 / 目标不在关卡注册表 / 此刻非稳定点），玩家没被送走，保持游玩态");
+                return;
+            }
+        }
+
+        // 防御:若触发于暂停中先解除 —— 结局房间的演出全走 scaled time(timeScale = 0 会被冻在半途,
+        // 而结局里既不能暂停也没有手动退出,冻住就是死局)
+        PauseMenu.ForceExitPause();
+
+        currentEndingId = def.id;
+        endingRunPlaythrough = SaveSystem.HasActiveRun ? SaveSystem.ActivePlaythrough : SaveSystem.Meta.completedRuns + 1;
+
+        SetState(FlowState.Ending);
+        GameEvents.EndingReached?.Invoke(def.id);
+        Debug.Log($"[GameFlow] 进入结局 {def.id}：演出在 {def.scenePath}");
     }
 
-    /// <summary>结局门(LevelAnchor Ending 目的地)被刷卡 → 同一入口。</summary>
+    /// <summary>结局门(卡上 Ending 目的地)在刷卡那一刻 → 同一入口(装载由那扇门自己做)。</summary>
     private void OnEndingDoorRequested(string endingId)
     {
-        RequestEnding(endingId);
+        RequestEnding(endingId, true);
     }
 
     // ==================== 主菜单 ↔ 游玩 ====================
@@ -402,61 +444,50 @@ public class GameFlowManager : MonoBehaviour
 
     // ==================== 结局 ====================
 
-    private IEnumerator EndingRoutine(EndingCatalog.EndingDefinition def)
-    {
-        PauseMenu.ForceExitPause();   // 防御:若触发于暂停中先解除
-        yield return FadeOverlay.FadeInAndHold(0.4f);   // 盖幕 + 全黑停留(时长见 FadeOverlay.holdBlackSeconds)
-
-        currentEndingId = def.id;
-        endingRunPlaythrough = SaveSystem.HasActiveRun ? SaveSystem.ActivePlaythrough : SaveSystem.Meta.completedRuns + 1;
-
-        SetState(FlowState.Ending);
-        GameEvents.EndingReached?.Invoke(def.id);
-
-        var ltm = LevelTransitionManager.Instance;
-        if (ltm != null)
-            yield return ltm.EndRunToMenuCoroutine();   // 收局:卸载关卡 + 玩家场景
-        // 注意:活动档会话保留到 EndingConfirmed(要拿周目号结算 / 置已通关)
-
-        // Room_00 只做主菜单背景,不担任结局演出地 —— 结局默认纯色幕(EndingOverlay 自带全屏底色);
-        // 只在结局定义显式给出 backdropScenePath(专属演出场景)时才加载它。
-        bool sceneBackdrop = !string.IsNullOrEmpty(def.backdropScenePath);
-        if (sceneBackdrop)
-            yield return ShowBackdropRoutine(def.backdropScenePath);
-        EndingOverlay.Instance?.Show(def, !sceneBackdrop);
-        ReleaseCursor();
-        yield return FadeOverlay.FadeRoutine(0f, 0.4f);
-        Debug.Log($"[GameFlow] 结局演出开始：{def.id}");
-    }
-
+    /// <summary>
+    /// 结局演出结束(结局房间的 EndingRoom 字幕播完、幕布已经黑掉之后调):
+    /// 记跨局元数据 → 收会话 → **删掉这一局的活动档** → 回主菜单。
+    /// 删档必须排在 EndRunSession 之后:收会话那一下还会补写一次档
+    /// (采集门槛只有"IsSettled + 玩家场景已加载",此刻玩家正站在结局房间里),先删会被它写回来。
+    /// </summary>
     private void ConfirmEnding()
     {
         if (State != FlowState.Ending || string.IsNullOrEmpty(currentEndingId)) return;
 
-        // 结算跨局元数据:累计通关周目只增不减 + 结局去重入库 + 活动档置"已通关"
-        SaveSystem.RecordCompletedRun(endingRunPlaythrough);
-        SaveSystem.RecordEndingSeen(currentEndingId);
-        SaveSystem.FinishActiveSlot();
-        SaveSystem.EndRunSession();
-        Debug.Log($"[GameFlow] 结局确认：{currentEndingId} · 累计通关 {SaveSystem.Meta.completedRuns} 周目");
-
         string endId = currentEndingId;
         currentEndingId = "";
-        EndingOverlay.Instance?.Hide();
+
+        // 活动槽号先记下来:EndRunSession 会把活动槽复位
+        int slot = SaveSystem.ActiveSlotIndex;
+
+        // 跨局元数据照记(多周目 / 结局解锁靠它);这一局的活动档则删掉 —— 结局演完这局就结束了
+        SaveSystem.RecordCompletedRun(endingRunPlaythrough);
+        SaveSystem.RecordEndingSeen(endId);
+        SaveSystem.EndRunSession();     // 内部还会补写一次档 → 删档必须排在它后面
+        SaveSystem.ClearSlot(slot);     // 删掉这一局的档(顺手清掉 meta.lastSlotIndex 的记忆)
+        Debug.Log($"[GameFlow] 结局确认：{endId} · 累计通关 {SaveSystem.Meta.completedRuns} 周目 · 槽 {slot} 已删除");
+
         StartCoroutine(ReturnToMenuRoutine(endId));
     }
 
-    /// <summary>结局确认后回主菜单:结局用了非默认背景时换回 Room_00。</summary>
+    /// <summary>结局确认后回主菜单:卸载结局房间与玩家场景、换回 Room_00 背景。</summary>
     private IEnumerator ReturnToMenuRoutine(string endedId)
     {
         yield return FadeOverlay.FadeInAndHold(0.3f);   // 盖幕 + 全黑停留(时长见 FadeOverlay.holdBlackSeconds)
+
+        // 结局房间与玩家场景的卸载归这里(结局的演出在房间里进行,流程一直没动过场景)。
+        // 也正因为卸干净了,下次开局不会残留一个结局房间。
+        var ltm = LevelTransitionManager.Instance;
+        if (ltm != null)
+            yield return ltm.EndRunToMenuCoroutine();
+
         string defBackdrop = ResolveDefaultBackdropPath();
         if (currentBackdropPath != defBackdrop)
             yield return ShowBackdropRoutine(defBackdrop);
         SetState(FlowState.MainMenu);   // 主菜单页面显隐由你搭的按钮 / MainMenuUI 决定
         ReleaseCursor();
         yield return FadeOverlay.FadeRoutine(0f, 0.4f);
-        Debug.Log($"[GameFlow] 已回主菜单（结局 {endedId} 已记录）");
+        Debug.Log($"[GameFlow] 已回主菜单（结局 {endedId} 已记录，档已删除）");
     }
 
     // ==================== 稳定点自动存档 ====================
