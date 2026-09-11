@@ -2,20 +2,28 @@ using System.Collections;
 using UnityEngine;
 
 /// <summary>
-/// 柴油机（可交互功能脚本，IInteractable 接入交互框架）：瞄准柴油机按下交互键 →
+/// 柴油机（可交互功能脚本，IInteractable 接入交互框架）：瞄着柴油机按下交互键 →
 /// 手上必须拿着指定工具（扳手），否则拒绝；放行即启动，启动做三件事：
 ///   1) 把目标物体从场景初始位姿平滑移动到"启动后位姿"（位移 + 旋转偏移），到位后永久保持；
 ///   2) 把"已启动"写进跨场景镜像 GeneratorStateSO（后续关卡的消费方轮询它）；
 ///   3) 自身状态进存档（ISceneSaveable，单向：启动后熄不了火）。
 ///
+/// 交互类型 = 工具操作：本物体上【必须另挂一个 Interactable 组件，Type 选 ToolOperated】——
+/// 它告诉交互框架"本物体只能被手里拿着的东西操作"：空手瞄它不算可交互（不描边、按不动），
+/// 持物时按键才分发到本组件的 OnInteract（见 BeeInteractionController.ResolveAimTarget / TryInteract）。
+/// 没挂 / 类型配错 = 按了没反应（持物按会变成放下手中物），属于最难查的静默故障 ——
+/// Awake 与 OnValidate 都会报出来（见 CheckInteractableType）。
+///
 /// 放行判定（在本脚本侧进行，与 CardReader.requiredItemId 同一套身份语义）：
 /// 手持物身份读 PlayerStateSO 镜像（不解析玩家控制器）—— HeldItemId 与 requiredItemId
-/// 相同才放行；空手 / 拿的是别的东西 → 拒绝并给"被拒"反馈（不改动任何状态、不消耗工具）。
-/// requiredItemId 留空 = 不检查工具身份，瞄准就能启动。
+/// 相同才放行；拿的是别的东西 → 拒绝并给"被拒"反馈（不改动任何状态、不消耗工具）。
+/// 空手按不到这里 —— 交互类型在瞄准解析里就挡掉了（不描边、不分发）。
+/// requiredItemId 留空 = 不检查工具身份，持物就能启动。
 ///
-/// 单向一次性机关：启动后组件自禁（enabled = false）—— 瞄准系统把禁用的交互组件视为不可交互
-/// （见 BeeInteractionController），启动过的柴油机从此没有描边、也按不动，一眼看出已启动；
-/// 协程不受组件禁用影响，照常把物体移到位。与 SwingSwitch 同款用法。
+/// 单向一次性机关：启动后自禁（本组件与上面那个 Interactable 标记一并 enabled = false）——
+/// 瞄准系统把禁用的交互组件视为不可交互（见 BeeInteractionController），启动过的柴油机
+/// 从此没有描边、也按不动，一眼看出已启动；协程不受组件禁用影响，照常把物体移到位。
+/// 与 SwingSwitch 同款用法。
 ///
 /// 移动方式（与 SwingSwitch 同一套"基线重算"思路）：首次使用时捕获目标的初始局部位姿作基线，
 /// 之后每一帧从基线重算 —— 全程零漂移。位移与旋转偏移都在【目标父级空间】给，也就是
@@ -71,6 +79,33 @@ public class DieselGenerator : MonoBehaviour, IInteractable, ISceneSaveable
     private Quaternion initialLocalRotation;
 
     private bool lastStart;   // 测试开关上次驱动的值
+
+    private void Awake()
+    {
+        // 严格非兜底：按键能不能分发到本组件，全看同物体上 Interactable 的类型 ——
+        // 配错就是"按了没反应"这种最难查的静默故障，运行时直接报错说清楚
+        CheckInteractableType(warnOnly: false);
+    }
+
+    /// <summary>
+    /// 交互类型自检：本物体的 Interactable 必须存在且 Type = ToolOperated ——
+    /// 它才是交互键的分发依据（见 BeeInteractionController.TryInteract）。
+    /// OnValidate 在编辑器里给警告，Awake 在运行时给错误（进 Play / 打包后也躲不掉）。
+    /// </summary>
+    private void CheckInteractableType(bool warnOnly)
+    {
+        var interactable = GetComponentInParent<Interactable>();
+        string problem = interactable == null
+            ? "缺 Interactable 组件 —— 在本物体上挂一个，Type 选 ToolOperated"
+            : interactable.Type != InteractionType.ToolOperated
+                ? $"Interactable 的 Type 是 {interactable.Type}，应选 ToolOperated"
+                : null;
+        if (problem == null) return;
+
+        string message = $"[DieselGenerator] {name}: {problem} —— 交互键分发不到本组件（持物按交互键会变成放下手中物）";
+        if (warnOnly) Debug.LogWarning(message, this);
+        else Debug.LogError(message, this);
+    }
 
     private void Update()
     {
@@ -140,8 +175,11 @@ public class DieselGenerator : MonoBehaviour, IInteractable, ISceneSaveable
             ApplyPose(1f);   // 读档恢复：瞬间到位
         }
 
-        // 用后即退役：自禁组件 —— 瞄准系统把禁用的交互组件视为不可交互（见 BeeInteractionController），
-        // 启动过的柴油机从此无描边、按不动；协程不受 enabled 影响，照常把物体移到位。
+        // 用后即退役：行为组件与交互类型标记一起自禁 —— 瞄准系统把禁用的交互组件视为不可交互
+        // （见 BeeInteractionController），启动过的柴油机从此无描边、按不动；
+        // 协程不受 enabled 影响，照常把物体移到位。
+        var marker = GetComponentInParent<Interactable>();
+        if (marker != null) marker.enabled = false;
         enabled = false;
     }
 
@@ -289,8 +327,7 @@ public class DieselGenerator : MonoBehaviour, IInteractable, ISceneSaveable
         }
         if (moveOffset == Vector3.zero && rotateEuler == Vector3.zero)
             Debug.LogWarning($"[DieselGenerator] {name}: 位移与旋转都是零 —— 启动了也没有物体移动。请配 Move Offset / Rotate Euler", this);
-        if (GetComponentInParent<Interactable>() != null)
-            Debug.LogWarning($"[DieselGenerator] {name}: 与 Interactable（可拾取物）挂在一起 —— 拾取流程会优先接管，交互按不动柴油机。请去掉其一", this);
+        CheckInteractableType(warnOnly: true);
         var other = GetComponentInParent<IInteractable>();
         if (other != null && !ReferenceEquals(other, this))
             Debug.LogWarning($"[DieselGenerator] {name}: 与另一个 IInteractable（按式交互物）在同一条瞄准链上 —— 按一次分发给谁不确定。柴油机应自成一体，不共链", this);

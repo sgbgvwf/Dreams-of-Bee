@@ -370,21 +370,23 @@ public class GameFlowManager : MonoBehaviour
         PauseMenu.ForceExitPause();   // 若从暂停菜单发起:先解除暂停(timeScale=1 / 光标释放)
         yield return FadeOverlay.FadeInAndHold(0.35f);   // 盖幕 + 全黑停留(时长见 FadeOverlay.holdBlackSeconds)
 
-        // 返回主菜单前自动存档(防崩溃丢进度)。若正处于门过渡 / 加载窗口(非稳定点),先等过渡
-        // 落定再存 —— 过渡中现场不可采集,硬存必失败且随后 EndRunSession 会静默丢进度;
-        // 上限 ~30 秒(加载卡死等不到稳定点时放弃存档并告警,不阻塞回菜单)。
+        // 返回主菜单前自动存档(防崩溃丢进度)。只在场景装卸的临时窗口等一等 —— T0→T1 加载 /
+        // T3 卸载 / 开局收局占用,都要先落定现场才能采集,硬存必失败且随后 EndRunSession 会静默丢进度;
+        // 上限 ~30 秒(加载卡死等不到时放弃存档并告警,不阻塞回菜单)。
+        // 不用 IsSettled 当"过渡中":它还包含"门已开、等玩家穿门"—— 那状态玩家可以一直停留
+        // (刷卡后走开不穿门),等它 = 回菜单被无限期挡住(表现:点完按钮黑屏几十秒没反应)。
         var ltm = LevelTransitionManager.Instance;
         if (ltm != null)
         {
             float wait = 0f;
-            while (!ltm.IsSettled && wait < 30f)
+            while (ltm.IsSceneTransitionInFlight && wait < 30f)
             {
                 yield return null;
                 wait += Time.unscaledDeltaTime;
             }
             bool saved = ltm.IsSettled && SaveSystem.SaveActiveSlot();
             if (!saved)
-                Debug.LogWarning("[GameFlow] 返回主菜单前自动存档失败(仍处于过渡/未就绪),本次进度未落盘");
+                Debug.LogWarning("[GameFlow] 返回主菜单前自动存档失败(现场此刻不可采集:装卸中 / 门已开未穿门 / 未就绪),本次进度未落盘");
         }
 
         if (ltm != null)

@@ -1,14 +1,20 @@
 using UnityEngine;
 
 /// <summary>
-/// 交互类型：物体"可交互"之后具体进行什么交互。
-/// 目前唯一的交互类型是拾取（读卡器 / 门等都不是 Interactable）；
+/// 交互类型：物体"可交互"之后具体进行什么交互（分发在 BeeInteractionController，按类型行事）。
+/// 读卡器 / 门不是 Interactable —— 它们是触发式的，不走这里。
 /// 后续新增交互类型时在这里扩展，并在 BeeInteractionController 的分发中加分支。
 /// </summary>
 public enum InteractionType
 {
-    /// <summary>可拾取：按交互键拾起 / 放下</summary>
+    /// <summary>可拾取：按交互键拾起 / 放下。持物时按 = 放下手中物（一次只能拿一个）。</summary>
     Pickup,
+
+    /// <summary>工具操作：只能被手里拿着的东西操作（柴油机要扳手即此类）。
+    /// 空手时不算可交互 —— 不描边、按键不分发（瞄准解析里就挡掉，见 BeeInteractionController.ResolveAimTarget）；
+    /// 持物时按交互键 → 这次按键交给它的功能脚本（IInteractable.OnInteract）用手中物操作，手中物不放下，
+    /// 手里拿的是不是它要的东西由功能脚本自己判定。</summary>
+    ToolOperated,
 }
 
 /// <summary>
@@ -17,7 +23,8 @@ public enum InteractionType
 ///
 /// 交互流程（BeeInteractionController 统一遵守）：
 ///  1. 先判断是否可交互：射线命中物体（或其父级）带 Interactable 组件；
-///  2. 再根据 Type 决定进行什么交互（目前只有拾取）。
+///  2. 再根据 Type 决定进行什么交互：Pickup = 拾起 / 放下；
+///     ToolOperated = 交给功能脚本用手中物操作（空手时不算可交互，不描边、按不动）。
 ///
 /// 拾取物（Type == Pickup）在 Awake 时与玩家碰撞体永久 IgnoreCollision ——
 /// 取代旧 Pickable 层的 IgnoreLayerCollision 规则；collider 对级的忽略不受

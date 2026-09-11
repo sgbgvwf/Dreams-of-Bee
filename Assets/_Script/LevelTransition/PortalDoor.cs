@@ -3,15 +3,18 @@ using UnityEngine;
 /// <summary>
 /// 传送门 —— 出口门洞上的「穿门 + 门面供数」组件。
 ///
-/// 是什么:一扇单向传送门。玩家刷卡后门打开,走过门洞即被传送到目标关的对应门洞
+/// 是什么:一扇单向传送门。玩家刷卡后门打开,玩家碰到门面触发区即被传送到目标关的对应门洞
 /// (位姿/速度/朝向按两门相对变换换算,画面连续);同时在工作期把门面画面要用的数据
 /// (本关门锚点 / 目标门锚点 / 玩家位姿)每帧写进 PortalPoseSO 总线。
 ///
 /// 放哪:挂在出口锚点(LevelAnchor Exit)所在物体上 —— 即"玩家看过去、刷卡穿过去的那扇门"。
 /// 目标关(入口侧)不挂任何东西,只有锚点做位姿参照(见 LevelAnchor 头注释)。
 ///
-/// 绑什么:字段只有两个 ——
-///   - holdRange:穿过判定的生效距离(玩家离门超过它不做判定);
+/// 穿门判定谁负责:门面平面(贴 RenderTexture 的那张 Quad)上的 PortalCrossTrigger ——
+/// 它接住玩家碰撞体后调本组件的 OnFaceTouched。本组件不做任何"玩家在门平面哪一侧"的推算:
+/// 触发体在哪、多大,判定就在哪、多大(要提前/延后传送 = 调那个触发体,别改这里)。
+///
+/// 绑什么:字段只有一个 ——
 ///   - Pose Bus:可拖 PortalPoseSO 资产(不拖则自动从 Resources 加载;拖上引用可见可查、防资产被卸载)。
 ///
 /// 门面画面怎么来(与画面资产的分工):本组件【不创建、不管理任何画面资源】。
@@ -23,34 +26,28 @@ using UnityEngine;
 ///   - 本关门与目标门两锚点 +Z 必须沿同一条连续前进路径成对摆放(见 LevelAnchor 头注释),
 ///     转反一侧 = 门面平面背对玩家不可见 / 穿门落点朝向反;
 ///   - 没建 PortalPoseSO 资产 → 控制台报一条错,只有门面画面不出现,传送照常;
-///   - 穿过判定只在本关出口锚点有效:玩家在门洞矩形内、跨过门平面那一帧触发。
+///   - 玩家碰到门面却不传送 → 查 Quad 上的 PortalCrossTrigger 是否拖了本组件、触发体是否 Is Trigger;
+///   - 只有玩家本体(身上带 Rigidbody 的那个物体)能触发:手里举着的钥匙/道具自带 Rigidbody,
+///     碰到门面不会把人提前传走;
+///   - 未 Activate(门还没开)时本组件一律不理,此时玩家撞到的是门板,碰不到门面触发区。
 /// </summary>
 public class PortalDoor : MonoBehaviour
 {
-    [Header("穿门判定")]
-    [SerializeField, Tooltip("玩家离门超过此距离不做穿过判定(画面实时性由总线新鲜度负责,与此无关)。")]
-    private float holdRange = 12f;
-
     [Header("门面位姿总线")]
     [SerializeField, Tooltip("可拖的 PortalPoseSO 资产(数据通道:本组件写、目标关相机上的 PortalViewSync 读)。空 = 运行时从 Resources/PortalPose/PortalPoseSO 惰性加载。拖上 = Inspector 可见可查、场景持有强引用防卸载关卡时被资源清理。")]
     private PortalPoseSO poseBus;
 
     // --- 运行时解析 ---
-    private SlidingDoor exitDoor;       // 本关出口门(面板碰撞体 = 门洞尺寸)
+    private SlidingDoor exitDoor;       // 本关出口门
     private Transform player;           // 玩家(tag "Player",Player 常驻场景)
+    private Rigidbody playerBody;       // 玩家本体刚体(门面触发区只认它,见 OnFaceTouched)
     private BeeFlightController flight; // 玩家身上的飞行控制器(传送 + 视角读取)
     private Transform entryAnchor;      // 目标关入口锚点(Activate 时由管理器注入)
-
-    // --- 门平面基准(由出口锚点 + 门板碰撞体推导;穿门判定与门面摆放参考共用) ---
-    private Vector3 planePos;           // 门平面位置(锚点沿穿越方向反向退回门板深度的一半)
-    private Quaternion planeRot;        // 门平面朝向(锚点旋转,+Z = 穿越方向)
-    private Vector2 planeSize;          // 门洞宽 × 高(门板 BoxCollider size 的 X/Y)
 
     // --- 状态 ---
     private bool active;                // Activate(门面工作期开始)后为 true
     private bool crossed;               // 已穿过:一次性(单向)
     private bool setupDone;
-    private bool lastSide;              // 上一帧玩家相对门平面所在的一侧(true = 平面法线侧)
 
     /// <summary>由 LevelTransitionManager 在 T1 激活(目标关已加载、出口门即将打开)。</summary>
     public void Activate(Transform entryAnchor)
@@ -58,8 +55,6 @@ public class PortalDoor : MonoBehaviour
         this.entryAnchor = entryAnchor;
         if (!EnsureSetup()) return;
 
-        // 玩家必然在门内一侧:以当前所在侧作为"未穿过"基准
-        lastSide = GetSide(player.position);
         active = true;
         Debug.Log($"[PortalDoor] 传送门已激活：{name} → {entryAnchor.name}", this);
     }
@@ -71,10 +66,6 @@ public class PortalDoor : MonoBehaviour
 
         // 门面工作期:每帧把门面画面要用的数据写进总线(目标关相机上的 PortalViewSync 读它摆位姿)
         PublishPoseToBus();
-
-        // 穿过判定只在门口附近做
-        if (Vector3.Distance(player.position, planePos) > holdRange) return;
-        TryCrossing();
     }
 
     /// <summary>把门面位姿三组数据写入 PortalPoseSO(本组件是总线的唯一写入方)。
@@ -98,21 +89,20 @@ public class PortalDoor : MonoBehaviour
         setupDone = true;
 
         ResolvePlayer();
-        if (!TryGetDoorBox(out var box) || entryAnchor == null)
+        // 出口门(门板 BoxCollider)仍是配置必需项:它框出门洞矩形,编辑期 Gizmos 靠它画出
+        // 门面平面 / 触发体的摆放参考(见 OnDrawGizmos)。
+        if (!TryGetDoorBox(out _) || entryAnchor == null)
         {
             Debug.LogError($"[PortalDoor] 传送门无法初始化：需要出口锚点(LevelAnchor)、出口门(门板 BoxCollider)与入口锚点。{name}", this);
             return false;
         }
 
-        // 门平面基准:锚点 = 门洞中心(作者约定 +Z = 穿越方向,localScale = 1)
-        planeRot = transform.rotation;
-        planeSize = new Vector2(box.size.x, box.size.y);
-        planePos = ComputePlanePos(box);
         return true;
     }
 
     /// <summary>门平面位置:门洞中心沿穿越方向反向退回门板深度的一半(贴房间内侧墙面)。
-    /// 作者摆门面平面时可参照此面(尺寸见 Gizmos)。</summary>
+    /// 编辑期 Gizmos 用它标出门洞矩形(见 OnDrawGizmos);运行时穿门判定不再依赖它
+    /// ——触发体摆在门面 Quad 上(见 PortalCrossTrigger)。</summary>
     private Vector3 ComputePlanePos(BoxCollider box) =>
         transform.position - transform.rotation * Vector3.forward * (box.size.z * 0.5f);
 
@@ -133,31 +123,26 @@ public class PortalDoor : MonoBehaviour
         if (go == null) return false;
         player = go.transform;
         flight = go.GetComponent<BeeFlightController>();
+        playerBody = go.GetComponent<Rigidbody>();   // 门面触发区只认这个刚体(见 OnFaceTouched)
         return flight != null;
     }
 
     // ==================== 穿过判定与传送 ====================
 
-    /// <summary>玩家相对门平面处于哪一侧(true = 平面法线侧 = 穿越方向侧)。</summary>
-    private bool GetSide(Vector3 p) => Vector3.Dot(p - planePos, planeRot * Vector3.forward) >= 0f;
-
     /// <summary>
-    /// 穿过判定:玩家位置落在门洞矩形内,且相对门平面的一侧发生翻转。
-    /// 门洞矩形判定防止从门洞上方 / 侧面越过(墙外)时误传送。
+    /// 门面触发区(门面 Quad 上的 PortalCrossTrigger)接住玩家时调用 —— 立即传送。
+    /// 只认玩家本体:手里举着的钥匙/道具自带 Rigidbody,碰到门面不会把人提前传走。
+    /// 触发体摆在哪、多大由作者决定(见 PortalCrossTrigger 头注释);本组件不推算玩家在门哪一侧 ——
+    /// 要提前/延后传送就改那个触发体,别改这里。
     /// </summary>
-    private void TryCrossing()
+    public void OnFaceTouched(Collider other)
     {
-        Vector3 rel = player.position - planePos;
-        Vector3 local = Quaternion.Inverse(planeRot) * rel;   // 门平面本地坐标
+        if (!active || crossed) return;                      // 端口未激活(门还没开)/ 已穿过:一律不理
+        if (player == null && !ResolvePlayer()) return;
+        if (playerBody == null || other == null) return;
+        if (other.attachedRigidbody != playerBody) return;   // 不是玩家本体(例如手里举着的钥匙)
 
-        bool inRect = Mathf.Abs(local.x) < planeSize.x * 0.5f && Mathf.Abs(local.y) < planeSize.y * 0.5f;
-        bool side = local.z >= 0f;
-        if (inRect && side != lastSide)
-        {
-            Cross();
-            return;
-        }
-        lastSide = side;   // 未触发也持续更新,防矩形外绕行后状态陈旧
+        Cross();
     }
 
     private void Cross()
@@ -180,7 +165,7 @@ public class PortalDoor : MonoBehaviour
 
     private void OnDrawGizmos()
     {
-        // 穿过判定矩形 + 穿越方向(编辑期核对门洞尺寸与朝向;作者摆门面平面时以此矩形为准)
+        // 门洞矩形 + 穿越方向(编辑期核对门洞尺寸与朝向;作者摆门面平面 / 触发体时以此矩形为准)
         if (!TryGetDoorBox(out var box)) return;
 
         Vector3 pos = ComputePlanePos(box);
@@ -189,9 +174,9 @@ public class PortalDoor : MonoBehaviour
 
         Gizmos.matrix = Matrix4x4.TRS(pos, rot, size);
         Gizmos.color = new Color(0.2f, 0.7f, 1f, 0.30f);
-        Gizmos.DrawCube(Vector3.zero, Vector3.one);          // 穿门判定区(半透明;门面平面摆放参考)
+        Gizmos.DrawCube(Vector3.zero, Vector3.one);          // 门洞矩形(半透明;门面平面 / 触发体摆放参考)
         Gizmos.color = new Color(0.2f, 0.7f, 1f, 0.9f);
-        Gizmos.DrawWireCube(Vector3.zero, Vector3.one);      // 穿过判定矩形边框
+        Gizmos.DrawWireCube(Vector3.zero, Vector3.one);      // 门洞矩形边框
         Gizmos.matrix = Matrix4x4.identity;
 
         // 穿越方向(+Z)

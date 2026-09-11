@@ -24,7 +24,8 @@ using UnityEditor;
 ///   - BeginRun(i)   : 开局(菜单→新游戏):并行加载玩家场景 + 第 i 关,锁好出口门后 Settled;
 ///   - BeginResume(path): 读档:加载玩家场景 + 指定关卡(不 Settled —— 等流程恢复完场景物件与玩家,
 ///                     由流程调 SettleAfterRestore());
-///   - EndRunToMenuCoroutine(): 收局:卸载关卡与玩家场景、清理资源、复位内部状态。
+///   - EndRunToMenuCoroutine(): 收局:卸载关卡（含刷卡后没穿门时已加载的目的地关）与玩家场景、
+///                     清理资源、复位内部状态。
 ///   - Settled / IsSettled: 无任何加载 / 卸载 / 待穿越过渡的稳定点。刷卡、存档都只在 Settled 允许;
 ///     每次"到达新关站稳"(Begin* 完成 / T2 穿越 + T3 卸载完成)会触发 Settled 事件 → 流程自动存档。
 ///
@@ -102,6 +103,12 @@ public class LevelTransitionManager : MonoBehaviour
 
     /// <summary>稳定点：无加载 / 卸载 / 待穿越过渡。刷卡与存档只允许在 Settled 时进行。</summary>
     public bool IsSettled => settled;
+
+    /// <summary>场景装卸正在进行（临时窗口，必然自行落定）：T0→T1 加载中 / T3 卸载中 / 开局收局流程占用中。
+    /// 与 IsSettled 的分工：IsSettled 还把"门已开、等玩家穿门"也算作非稳定，而那个状态玩家可以一直停留
+    /// （刷卡后走开不穿门，关卡本身仍然是稳定的），不是过渡窗口。流程收局要"等一下再动手"时读本属性，
+    /// 读 IsSettled 会把可以无限期的状态误当成过渡窗口去等。</summary>
+    public bool IsSceneTransitionInFlight => loadState == LoadState.Loading || unloading || busyActive;
 
     /// <summary>进入稳定点时触发（Begin* 完成 / T2+T3 穿越结算完成）。GameFlowManager 借此做"到达自动存档"。</summary>
     public event System.Action Settled;
@@ -365,17 +372,41 @@ public class LevelTransitionManager : MonoBehaviour
         Debug.Log($"[LevelTransitionManager] 读档恢复完成，进入稳定点：{currentScene.name}", this);
     }
 
-    /// <summary>收局（返回主菜单 / 结局）：卸载当前关与玩家场景、清理资源、复位内部状态。流程以协程方式运行本方法。</summary>
+    /// <summary>收局（返回主菜单 / 结局）：卸载当前关、已刷卡但没穿门时已加载的目的地关、玩家场景，
+    /// 清理资源并复位内部状态。流程以协程方式运行本方法。</summary>
     public IEnumerator EndRunToMenuCoroutine()
     {
         busyActive = true;
         SetSettled(false);
+
+        // 还挂在半途的加载（流程等待超时后放弃等待时会走到这里）：先夺代际令加载协程在自检点退场
+        // （不再开门 / 激活传送门），再放行激活等它落地 —— 下面按路径把它加载的目的地关一并卸载，
+        // 不留半途的加载窗口（否则它会在收局之后才激活，成为菜单里的残留场景）
+        loadGeneration++;
+        var pendingLoad = loadOp;
+        if (pendingLoad != null && !pendingLoad.isDone)
+        {
+            pendingLoad.allowSceneActivation = true;
+            while (!pendingLoad.isDone) yield return null;
+        }
 
         // 卸载当前关卡（若有）
         if (currentScene.IsValid() && currentScene.isLoaded)
         {
             var op = SceneManager.UnloadSceneAsync(currentScene);
             if (op != null) yield return op;
+        }
+
+        // 卸载"已刷卡但玩家没穿门"的目的地关（T0/T1 已加载进来，但还不是 currentScene）：
+        // 不在这里收掉，它就会跟着回到主菜单 —— 下次再进同一关会加载出重复实例
+        if (!string.IsNullOrEmpty(activeDestPath))
+        {
+            var dest = SceneManager.GetSceneByPath(activeDestPath);
+            if (dest.IsValid() && dest.isLoaded && dest != currentScene)
+            {
+                var op = SceneManager.UnloadSceneAsync(dest);
+                if (op != null) yield return op;
+            }
         }
 
         // 卸载玩家场景（若有）

@@ -415,8 +415,17 @@ public static class SaveSystem
                     Debug.LogWarning($"[SaveSystem] 存档条目 {entry.type}@{entry.path} 在 {scene.name} 中找不到对应物体，已跳过（物体改名 / 被删）");
                     continue;
                 }
-                var saveable = target.GetComponent<ISceneSaveable>();
-                if (saveable == null || saveable.SaveableType != entry.type)
+                // 同一物体可能挂多个可存档组件（如柴油机 = 交互类型标记 Interactable + 自身行为脚本）：
+                // 按存档条目里的类型找对应的那一个 —— 采集侧就是"有几个组件写几条"，恢复侧必须一一对上，
+                // 不能靠 GetComponent 返回哪个（顺序变了就静默恢复不了）
+                ISceneSaveable saveable = null;
+                foreach (var candidate in target.GetComponents<ISceneSaveable>())
+                {
+                    if (candidate.SaveableType != entry.type) continue;
+                    saveable = candidate;
+                    break;
+                }
+                if (saveable == null)
                 {
                     Debug.LogWarning($"[SaveSystem] 存档条目 {entry.type}@{entry.path} 与物体现有组件不符，已跳过（组件被换？）");
                     continue;

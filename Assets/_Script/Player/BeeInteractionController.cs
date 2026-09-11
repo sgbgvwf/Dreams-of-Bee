@@ -14,9 +14,12 @@ using UnityEngine.InputSystem;
 ///     cleared, and its colliders turned off, and it is forced to hang slightly below the
 ///     player, carried rigidly at a fixed body-local offset); IInteractable → its OnInteract() is called;
 ///     the concrete behavior (flipping a lamp switch, opening a door...) is entirely up to the implementer.
-///   - 持物时按下交互键（右键）：先看瞄准目标 —— 瞄到 IInteractable（按式交互物）→ 调用其
-///     OnInteract()，手中物留着（"手里拿的是不是它要的东西"由功能脚本自己判定，柴油机要扳手即走这条）；
-///     瞄到拾取物 / 没瞄到 → 放下手中物（重力与碰撞体恢复，运动清零）。一次只能拿一个物品。
+///   - 持物时按下交互键（右键）：按瞄准目标的交互类型行事 —— 工具操作物（Interactable.Type =
+///     ToolOperated，如柴油机要扳手）→ 调用其功能脚本的 OnInteract()，手中物留着（手里拿的是不是
+///     它要的东西由功能脚本自己判定）；其余（拾取物 / 普通按式交互物 / 没瞄到）→ 放下手中物
+///     （重力与碰撞体恢复，运动清零）。一次只能拿一个物品。
+///   - 工具操作物（Interactable.Type = ToolOperated）空手时不算可交互：不描边、按键不分发
+///     —— 空手瞄它等于没瞄到（见 ResolveAimTarget）。
 ///   - 瞄准射线只认"启用中"的交互组件：链上的 IInteractable / Interactable 若已被禁用
 ///     （一次性机关开过后自禁退役，见 SwingSwitch）= 不可交互 —— 不描边、不分发。
 ///   - 拿东西时可以趴着但爬不动：持物接触表面同样进入 Crawling（能停靠、能恢复体力），
@@ -93,14 +96,7 @@ public class BeeInteractionController : MonoBehaviour
         UpdateAimOutline();   // 每帧：瞄准目标变化时更新描边
 
         if (interactAction.WasPressedThisFrame())
-        {
-            // 持物时：先问瞄准的"按式交互物"要不要这次按键（柴油机要扳手即走这条）；
-            // 它不接管（没瞄到可交互物 / 瞄到的是拾取物）才放下手中物
-            if (heldObject == null)
-                TryInteract();
-            else if (!TryInteractWhileHolding())
-                DropHeld();
-        }
+            TryInteract();
     }
 
     /// <summary>
@@ -116,13 +112,7 @@ public class BeeInteractionController : MonoBehaviour
         int mask = ~((1 << gameObject.layer) | (1 << LayerMask.NameToLayer("Portal")));
         bool hitTarget = Physics.Raycast(cameraTransform.position, cameraTransform.forward,
             out RaycastHit hit, interactRange, mask);
-        // 可交互判定（与 TryInteract 分发同序，拾取优先）：
-        //  Interactable → 拾取物；否则 IInteractable → 按式/单击型交互物（OnInteract 边缘分发）。
-        //  沿父链找到的组件若已禁用 = 用后退役（一次性机关自禁）→ 不算可交互（见 FindEnabledInParents）
-        var pickable = hitTarget ? FindEnabledInParents<Interactable>(hit.collider.transform) : null;
-        Component aimTarget = pickable != null
-            ? pickable
-            : hitTarget ? FindEnabledInParents<IInteractable>(hit.collider.transform) as Component : null;
+        Component aimTarget = hitTarget ? ResolveAimTarget(hit.collider.transform) : null;
 
         if (aimTarget != null)
         {
@@ -145,6 +135,28 @@ public class BeeInteractionController : MonoBehaviour
             currentAimRoot = null;
             GameEvents.AimLost?.Invoke();   // 描边丢失音效
         }
+    }
+
+    /// <summary>
+    /// 瞄准解析：射线命中的 collider → 交互组件（null = 不可交互）。
+    /// 顺序 = 分发优先级（与 TryInteract 同序，拾取优先）：
+    ///  - 链上有 Interactable（拾取物 / 工具操作物）→ 就是它；其中【工具操作物空手时不算可交互】
+    ///    （它只能被手里拿着的东西操作：空手瞄它不描边、按键不分发），整链就此打住，不再往下找 ——
+    ///    否则又会落到它的功能脚本上描边、按了给"被拒"
+    ///  - 否则链上有 IInteractable（台灯开关、摆动机关、冲量件等按式交互物）→ 就是它
+    /// 沿父链找的组件若已禁用 = 用后退役（一次性机关自禁）→ 不算可交互（见 FindEnabledInParents）。
+    /// </summary>
+    private Component ResolveAimTarget(Transform hitTransform)
+    {
+        var marker = FindEnabledInParents<Interactable>(hitTransform);
+        if (marker != null)
+        {
+            if (marker.Type == InteractionType.ToolOperated && heldObject == null)
+                return null;   // 工具操作物 + 空手：不可交互
+            return marker;
+        }
+
+        return FindEnabledInParents<IInteractable>(hitTransform) as Component;
     }
 
     /// <summary>
@@ -200,47 +212,42 @@ public class BeeInteractionController : MonoBehaviour
     }
 
     /// <summary>
-    /// 持物状态下的按键分发：瞄准目标是"按式交互物"（IInteractable）→ 调用其 OnInteract()，
-    /// 这次按键归它、手中物留着（手里拿的是不是它要的东西由功能脚本自己判定 —— 柴油机要扳手即此路径）；
-    /// 返回 false = 没有交互物接管这次按键，由调用方放下手中物。
-    /// 拾取物（Interactable）不吃持物按键：一次只能拿一个，瞄着拾取物按仍然是放下（放下才能拿下一个）。
-    /// </summary>
-    private bool TryInteractWhileHolding()
-    {
-        if (currentAim == null)
-            return false;   // 未瞄准可交互物
-
-        if (currentAim.GetComponentInParent<Interactable>() != null)
-            return false;   // 拾取物：不接管，交给调用方放下手中物
-
-        var handler = currentAim.GetComponentInParent<IInteractable>();
-        if (handler == null)
-            return false;
-
-        handler.OnInteract();
-        return true;
-    }
-
-    /// <summary>
-    /// 空手交互判定与分发（复用每帧瞄准检测的结果，按组件类别行事，拾取优先）：
-    ///  - 只管空手路径：持物时的分发走 TryInteractWhileHolding（瞄到按式交互物 → 交给它，否则放下）；
-    ///    这里再加一道防御，防止未来其它路径绕过 Update 直接调用
-    ///  - 准星未瞄准可交互物 → 直接返回
-    ///  - 命中物体有 Interactable → 拾起（拾取物）
-    ///  - 否则有 IInteractable → 调用其 OnInteract()，具体行为由功能脚本自行处理
-    ///    （aimTarget 已被禁用规则滤过 —— 退役组件进不到这里）
+    /// 按键分发（复用每帧瞄准检测的结果），按瞄准目标的交互类型行事（Interactable.InteractionType）：
+    ///  - 拾取物（type = Pickup）：空手 → 拾起；持物 → 放下手中物（一次只能拿一个）
+    ///  - 工具操作物（type = ToolOperated，如柴油机要扳手）：能走到这里说明手里拿着东西
+    ///    （空手时瞄准解析就不认它，见 ResolveAimTarget）→ 这次按键交给它的功能脚本 OnInteract()
+    ///    用手中物操作，手中物留着（手里拿的是不是它要的东西由功能脚本自己判定）
+    ///  - 普通按式交互物（只有 IInteractable：台灯开关 / 抽屉 / 纸张 / 冲量件…）：空手 → OnInteract()；
+    ///    持物 → 放下手中物（手里的东西不参与这类交互）
+    ///  - 没瞄到可交互物：持物 → 放下手中物
+    /// 拾取优先：链上同时有 Interactable 与 IInteractable 时按前者行事。
+    /// 瞄准链已被禁用规则滤过 —— 退役组件进不到这里（见 FindEnabledInParents）。
     /// </summary>
     private void TryInteract()
     {
-        if (heldObject != null)
-            return;   // 持物中：本方法只管空手（持物走 TryInteractWhileHolding），这里防御其它路径绕过
         if (currentAim == null)
-            return;   // 未瞄准可交互物
+        {
+            // 没瞄到可交互物：手里有东西就放下（右键 = 放下手中物）；空手按 = 无动作
+            if (heldObject != null) DropHeld();
+            return;
+        }
 
         var interactable = currentAim.GetComponentInParent<Interactable>();
-        if (interactable != null)
+        if (interactable != null && interactable.Type == InteractionType.Pickup)
         {
-            PickUp(currentAim);
+            if (heldObject != null)
+                DropHeld();
+            else
+                PickUp(currentAim);
+            return;
+        }
+
+        // 工具操作物：持物时才把这次按键交给它用手中物操作（手中物留着）；
+        // 其余情况（普通按式交互物）持物按 = 放下手中物 —— 手里的东西不参与这类交互
+        bool toolOperated = interactable != null && interactable.Type == InteractionType.ToolOperated;
+        if (heldObject != null && !toolOperated)
+        {
+            DropHeld();
             return;
         }
 

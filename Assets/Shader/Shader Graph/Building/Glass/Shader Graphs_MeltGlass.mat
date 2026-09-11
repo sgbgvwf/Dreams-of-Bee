@@ -69,7 +69,7 @@ Material:
     - _EnableFogOnTransparent: 1
     - _ExcludeFromTUAndAA: 0
     - _FresnelEffectPower: 4
-    - _Melt: 0.5
+    - _Melt: 0.4239089
     - _OpaqueCullMode: 2
     - _RayTracing: 0
     - _ReceivesSSR: 1
