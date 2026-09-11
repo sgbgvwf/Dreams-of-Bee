@@ -68,10 +68,11 @@ Shader "Dreams of Bee/Portal Screen"
     Varyings Vert(Attributes input)
     {
         Varyings output;
-        float4 posCS = TransformObjectToHClip(input.positionOS.xyz);
+        float4 posCS = TransformObjectToHClip(input.positionOS.xyz);    // MVP矩阵
         output.positionCS = posCS;
-        // ComputeScreenPos 的标准形态：插值 (ndc*0.5+0.5)*w 与 zw，片元里再做透视除法
-        output.screenPos.xy = posCS.xy * 0.5 + 0.5 * posCS.w;
+        output.screenPos.xy = posCS.xy * 0.5 + 0.5 * posCS.w;   
+        // 相较于正常的裁剪空间转屏幕空间，这里由于裁剪空间非线性因此不能直接除以w。
+        // 除以w的操作放在了片元
         output.screenPos.zw = posCS.zw;
         return output;
     }
@@ -107,9 +108,8 @@ Shader "Dreams of Bee/Portal Screen"
 
             float4 Frag(Varyings input) : SV_Target
             {
-                float2 uv = input.screenPos.xy / input.screenPos.w;
-                // 相机渲染到贴图时投影被翻转，采样时翻回来（见头注释坑 4）
-                uv.y = 1.0 - uv.y;
+                float2 uv = input.screenPos.xy / input.screenPos.w; // 透视的关键：从玩家的屏幕空间内获得当前片元的位置，再拿到RT内取色
+                uv.y = 1.0 - uv.y;  // 相机渲染到贴图时投影被翻转，采样时翻回来
 
                 float3 color = SAMPLE_TEXTURE2D(_UnlitColorMap, sampler_UnlitColorMap, uv).rgb * _UnlitColor.rgb;
                 // 与 HDRP/Unlit 相同的曝光约定（相机叠加合成时才不为 1，通常就是 1）
